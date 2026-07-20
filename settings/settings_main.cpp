@@ -120,6 +120,10 @@ public:
         m_compactHeight->setValue(300);
         modeForm->addRow("Compact height:", m_compactHeight);
 
+        m_compactAtCursor = new QCheckBox("Spawn compact overlay at mouse cursor");
+        m_compactAtCursor->setChecked(false);
+        modeForm->addRow("", m_compactAtCursor);
+
         connect(m_mode, &QComboBox::currentIndexChanged, this, &SettingsWindow::updateCompactEnabled);
         outer->addWidget(modeBox);
 
@@ -198,6 +202,7 @@ private:
     QComboBox *m_mode;
     QSpinBox *m_compactWidth;
     QSpinBox *m_compactHeight;
+    QCheckBox *m_compactAtCursor;
     QSpinBox *m_gap;
     QKeySequenceEdit *m_shortcut;
     QSpinBox *m_gridCols;
@@ -254,6 +259,7 @@ private:
         const bool compact = m_mode->currentData().toString() == "compact";
         m_compactWidth->setEnabled(compact);
         m_compactHeight->setEnabled(compact);
+        m_compactAtCursor->setEnabled(compact);
     }
 
     void loadFromDisk() {
@@ -278,6 +284,7 @@ private:
 
         m_compactWidth->setValue(obj.value("compactWidth").toInt(480));
         m_compactHeight->setValue(obj.value("compactHeight").toInt(300));
+        m_compactAtCursor->setChecked(obj.value("compactAtCursor").toBool(false));
         m_gap->setValue(obj.value("gap").toInt(8));
         m_gridCols->setValue(obj.value("gridCols").toInt(6));
         m_gridRows->setValue(obj.value("gridRows").toInt(4));
@@ -306,6 +313,7 @@ private:
         obj["mode"] = m_mode->currentData().toString();
         obj["compactWidth"] = m_compactWidth->value();
         obj["compactHeight"] = m_compactHeight->value();
+        obj["compactAtCursor"] = m_compactAtCursor->isChecked();
         obj["gap"] = m_gap->value();
 
         QString shortcutStr = m_shortcut->keySequence().toString(QKeySequence::PortableText);

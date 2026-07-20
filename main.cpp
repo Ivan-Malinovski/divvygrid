@@ -59,6 +59,10 @@ struct Config {
     // if true, placing a window that overlaps another window's edge shrinks that other
     // window to make room, instead of leaving it covered underneath the new placement
     bool resizeOverlapping = true;
+    // compact mode only: if true, the overlay spawns centered on the cursor instead of the
+    // screen for a plain hotkey activation too (already true unconditionally for a
+    // drag-triggered activation - see Controller::spawnAtCursor)
+    bool compactAtCursor = false;
     QHash<QString, MonitorOverride> monitors; // keyed by QScreen::name()
 };
 
@@ -77,6 +81,7 @@ void writeDefaultConfig(const Config &c) {
     obj["gap"] = c.gap;
     obj["shortcut"] = c.shortcut;
     obj["resizeOverlapping"] = c.resizeOverlapping;
+    obj["compactAtCursor"] = c.compactAtCursor;
     QJsonObject monitors;
     for (auto it = c.monitors.constBegin(); it != c.monitors.constEnd(); ++it) {
         QJsonObject m;
@@ -112,6 +117,7 @@ Config loadConfig() {
     if (obj.contains("gap")) c.gap = obj["gap"].toInt(c.gap);
     if (obj.contains("shortcut")) c.shortcut = obj["shortcut"].toString(c.shortcut);
     if (obj.contains("resizeOverlapping")) c.resizeOverlapping = obj["resizeOverlapping"].toBool(c.resizeOverlapping);
+    if (obj.contains("compactAtCursor")) c.compactAtCursor = obj["compactAtCursor"].toBool(c.compactAtCursor);
     if (obj.contains("monitors") && obj["monitors"].isObject()) {
         const QJsonObject monitors = obj["monitors"].toObject();
         for (auto it = monitors.constBegin(); it != monitors.constEnd(); ++it) {
@@ -562,8 +568,13 @@ int main(int argc, char *argv[]) {
             QObject::connect(&controller, &Controller::dismissed, window, &QQuickWindow::hide);
         }
 
-        controller.setSpawnAtCursor(dragTriggered);
-        if (dragTriggered) {
+        // plain hotkey activation in compact mode can also spawn at the cursor, if
+        // configured - gCursorPos is already populated by captureActiveWindow() above in
+        // this (non-drag-triggered) branch, via the same privileged workspace.cursorPos
+        // query used for drag-triggered activations
+        const bool compactCursorSpawn = !dragTriggered && cfg.mode == QLatin1String("compact") && cfg.compactAtCursor;
+        controller.setSpawnAtCursor(dragTriggered || compactCursorSpawn);
+        if (dragTriggered || compactCursorSpawn) {
             controller.setExternalCursor(gCursorPos.x(), gCursorPos.y());
         }
 

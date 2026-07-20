@@ -97,6 +97,7 @@ needed for QML-only edits, just restart the daemon.
   "mode": "fullscreen",       // "fullscreen" | "compact"
   "compactWidth": 480,
   "compactHeight": 300,
+  "compactAtCursor": false,   // compact mode: spawn overlay centered on the mouse cursor
   "gap": 8,                   // px inset applied to each edge of the final placed window
   "shortcut": "Meta+Alt+D",   // Qt portable-text QKeySequence string
   "resizeOverlapping": true,  // shrink other windows whose edge is fully covered by a new placement
