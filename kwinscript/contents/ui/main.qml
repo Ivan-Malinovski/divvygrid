@@ -872,6 +872,12 @@ PlasmaCore.Dialog {
     // only handles a clean full-width/full-height edge slice, same as the daemon version
     function resizeOverlappingWindows(target) {
         const EPS = 24;
+        // `target` is already the placed window's final geometry, inset by windowGap/2 - so
+        // retreating a neighbour to exactly the overlap edge leaves the two frames touching,
+        // with no gap at all. Back it off by the full gap instead, which reproduces the
+        // spacing two grid-placed windows get by construction (each inset windowGap/2 from
+        // the shared cell boundary).
+        const gap = root.windowGap;
         const others = Workspace.stackingOrder;
         for (let j = 0; j < others.length; j++) {
             const ow = others[j];
@@ -882,16 +888,18 @@ PlasmaCore.Dialog {
             let nr = null;
             if (ov.width >= c.width - EPS) {
                 if (Math.abs(ov.y - c.y) <= EPS) {
-                    nr = Qt.rect(c.x, ov.y + ov.height, c.width, (c.y + c.height) - (ov.y + ov.height));
+                    const top = ov.y + ov.height + gap;
+                    nr = Qt.rect(c.x, top, c.width, (c.y + c.height) - top);
                 } else if (Math.abs((ov.y + ov.height) - (c.y + c.height)) <= EPS) {
-                    nr = Qt.rect(c.x, c.y, c.width, ov.y - c.y);
+                    nr = Qt.rect(c.x, c.y, c.width, (ov.y - gap) - c.y);
                 }
             }
             if (!nr && ov.height >= c.height - EPS) {
                 if (Math.abs(ov.x - c.x) <= EPS) {
-                    nr = Qt.rect(ov.x + ov.width, c.y, (c.x + c.width) - (ov.x + ov.width), c.height);
+                    const left = ov.x + ov.width + gap;
+                    nr = Qt.rect(left, c.y, (c.x + c.width) - left, c.height);
                 } else if (Math.abs((ov.x + ov.width) - (c.x + c.width)) <= EPS) {
-                    nr = Qt.rect(c.x, c.y, ov.x - c.x, c.height);
+                    nr = Qt.rect(c.x, c.y, (ov.x - gap) - c.x, c.height);
                 }
             }
             if (nr && nr.width > 50 && nr.height > 50) {
