@@ -36,6 +36,11 @@ PlasmaCore.Dialog {
     property bool resizeOverlapping: true
     property bool compactAtCursor: false
     property string hotCorner: "none"
+    // when true, any native window drag auto-shows a small top-center single-cell picker
+    // after the window has moved past a threshold, no shortcut needed - modeled on
+    // KZones/MouseTiler's automatic drag-triggered zone overlays. Opt-in since it changes
+    // the feel of every plain window move, not just shortcut-driven placements.
+    property bool dragAutoTrigger: false
     // per-output {gridCols, gridRows} overrides, keyed by output name (e.g. "DP-2"),
     // parsed from the monitorsJson config entry
     property var monitorOverrides: ({})
@@ -63,6 +68,7 @@ PlasmaCore.Dialog {
         resizeOverlapping = KWin.readConfig("resizeOverlapping", true);
         compactAtCursor = KWin.readConfig("compactAtCursor", false);
         hotCorner = hotCornerNames[KWin.readConfig("hotCorner", 0)] || "none";
+        dragAutoTrigger = KWin.readConfig("dragAutoTrigger", false);
         try {
             monitorOverrides = JSON.parse(KWin.readConfig("monitorsJson", "{}"));
         } catch (e) {
@@ -105,26 +111,37 @@ PlasmaCore.Dialog {
     // native interactive move (the compositor keeps that grab with the dragged window).
     property bool dragTriggered: false
 
+    // true while the currently-shown overlay is the auto-trigger-on-drag picker (see
+    // "auto-trigger on drag" below) - a small top-center single-cell hover picker, distinct
+    // from both the shortcut-driven grid and dragTriggered's cursor-following box.
+    property bool autoMode: false
+
     // holding Shift temporarily doubles the grid resolution for finer placement -
     // all cell math below uses effCols/effRows instead of the raw config values
     property bool shiftHeld: false
     property int effCols: shiftHeld ? activeGridCols * 2 : activeGridCols
     property int effRows: shiftHeld ? activeGridRows * 2 : activeGridRows
 
-    property bool isCompact: overlayMode === "compact"
+    property bool isCompact: overlayMode === "compact" || root.autoMode
     property real availLocalX: availGeo.x - screenGeo.x
     property real availLocalY: availGeo.y - screenGeo.y
     property real canvasWidth: isCompact ? Math.min(compactWidth, availGeo.width) : availGeo.width
     property real canvasHeight: isCompact ? Math.min(compactHeight, availGeo.height) : availGeo.height
     // drag-triggered activations always spawn the compact box at the cursor, regardless of
-    // the compactAtCursor setting - it's inherently about following the mouse mid-drag
-    property bool effectiveCompactAtCursor: compactAtCursor || dragTriggered
-    property real canvasX: (isCompact && effectiveCompactAtCursor)
-        ? clamp((spawnCursorPos.x - screenGeo.x) - canvasWidth / 2, availLocalX, availLocalX + availGeo.width - canvasWidth)
-        : availLocalX + (availGeo.width - canvasWidth) / 2
-    property real canvasY: (isCompact && effectiveCompactAtCursor)
-        ? clamp((spawnCursorPos.y - screenGeo.y) - canvasHeight / 2, availLocalY, availLocalY + availGeo.height - canvasHeight)
-        : availLocalY + (availGeo.height - canvasHeight) / 2
+    // the compactAtCursor setting - it's inherently about following the mouse mid-drag.
+    // autoMode overrides this the other way: it always sits fixed top-center (see below),
+    // never follows the cursor, so it doesn't jump around as the dragged window moves.
+    property bool effectiveCompactAtCursor: (compactAtCursor || dragTriggered) && !root.autoMode
+    property real canvasX: root.autoMode
+        ? availLocalX + (availGeo.width - canvasWidth) / 2
+        : (isCompact && effectiveCompactAtCursor)
+            ? clamp((spawnCursorPos.x - screenGeo.x) - canvasWidth / 2, availLocalX, availLocalX + availGeo.width - canvasWidth)
+            : availLocalX + (availGeo.width - canvasWidth) / 2
+    property real canvasY: root.autoMode
+        ? availLocalY + 24
+        : (isCompact && effectiveCompactAtCursor)
+            ? clamp((spawnCursorPos.y - screenGeo.y) - canvasHeight / 2, availLocalY, availLocalY + availGeo.height - canvasHeight)
+            : availLocalY + (availGeo.height - canvasHeight) / 2
     property real scaleX: availGeo.width / canvasWidth
     property real scaleY: availGeo.height / canvasHeight
 
@@ -208,6 +225,9 @@ PlasmaCore.Dialog {
         root.visible = false;
         root.dragging = false;
         root.dragTriggered = false;
+        root.autoMode = false;
+        root.autoDragPending = false;
+        root.autoAnchored = false;
     }
 
     function toggle() {
@@ -241,15 +261,108 @@ PlasmaCore.Dialog {
         );
     }
 
+    // ---- auto-trigger on drag ----
+    //
+    // With dragAutoTrigger enabled, any native window drag (no shortcut needed) shows a
+    // small top-center picker once the window has moved past a distance threshold - avoids
+    // flashing the overlay on a plain click-to-focus or tiny nudge. There's only one tracked
+    // point available (the native drag position - our own MouseArea gets no events during a
+    // native move), so a real press-drag-release rectangle gesture isn't possible the way
+    // the shortcut-driven grid does it. Instead: the picker starts with nothing selected,
+    // and the moment the cursor first crosses into the picker's bounds, that point becomes
+    // a pinned anchor - continuing to drag from there grows a normal rectangle selection
+    // (reusing dragging/rawRect/computeSelBounds/finishDrag as-is) between that anchor and
+    // the live cursor position, same visual as the shortcut-driven grid.
+    property bool autoDragPending: false
+    property point autoDragStartPos: Qt.point(0, 0)
+    readonly property int autoDragThreshold: 24
+    // true once the cursor has crossed into the picker at least once this drag and an
+    // anchor corner has been pinned - before that, nothing is selected/highlighted yet
+    property bool autoAnchored: false
+
+    function pointInCanvas(p) {
+        return p.x >= 0 && p.x <= canvasWidth && p.y >= 0 && p.y <= canvasHeight;
+    }
+
+    // forcedTarget is always set here (called only from onNativeDragStepped once the
+    // threshold trips) - unlike show(), there's no "no target" case to handle.
+    function showAuto(win) {
+        root.loadConfig();
+        root.dragTriggered = false;
+        root.autoMode = true;
+        root.autoAnchored = false;
+        root.overlayMode = "compact";
+
+        targetWindow = win;
+        targetTitle = "";
+        targetIconName = "";
+        spawnCursorPos = Workspace.cursorPos;
+
+        targetScreenObj = screenAt(spawnCursorPos);
+        screenGeo = targetScreenObj.geometry;
+        availGeo = Workspace.clientArea(KWin.PlacementArea, targetScreenObj, Workspace.currentDesktop);
+
+        const override = monitorOverrides[targetScreenObj.name];
+        activeGridCols = (override && override.gridCols > 0) ? override.gridCols : gridCols;
+        activeGridRows = (override && override.gridRows > 0) ? override.gridRows : gridRows;
+
+        root.shiftHeld = false;
+        root.pickerOpen = false;
+        root.dragging = false;
+        root.visible = true;
+        root.requestActivate();
+        root.dragCurrent = root.externalCanvasPoint();
+    }
+
     function onNativeDragStarted(win) {
         root.nativeDragWindow = win;
         root.nativeDragActive = true;
+        if (root.dragAutoTrigger && !root.visible && win.normalWindow) {
+            root.autoDragPending = true;
+            root.autoDragStartPos = Workspace.cursorPos;
+        }
     }
 
     function onNativeDragStepped(win) {
         if (win !== root.nativeDragWindow) return;
         if (root.visible && root.dragTriggered && root.targetWindow === win) {
             root.dragCurrent = root.externalCanvasPoint();
+            return;
+        }
+        if (root.autoDragPending && !root.visible) {
+            const p = Workspace.cursorPos;
+            const dx = p.x - root.autoDragStartPos.x, dy = p.y - root.autoDragStartPos.y;
+            if (Math.sqrt(dx * dx + dy * dy) >= root.autoDragThreshold) {
+                root.autoDragPending = false;
+                root.showAuto(win);
+            }
+            return;
+        }
+        if (root.visible && root.autoMode && root.targetWindow === win) {
+            // the picker is pinned to whichever screen the drag started on, but a drag
+            // routinely crosses monitors - re-home it (geometry, work area, per-monitor grid
+            // override) to follow the cursor's current screen, same as show()/showAuto()
+            // compute it initially. Any in-progress anchor/selection is screen-local, so it
+            // gets dropped and has to be re-picked on the new screen rather than translated.
+            const curScreen = root.screenAt(Workspace.cursorPos);
+            if (curScreen !== root.targetScreenObj) {
+                root.targetScreenObj = curScreen;
+                root.screenGeo = curScreen.geometry;
+                root.availGeo = Workspace.clientArea(KWin.PlacementArea, curScreen, Workspace.currentDesktop);
+                const override = root.monitorOverrides[curScreen.name];
+                root.activeGridCols = (override && override.gridCols > 0) ? override.gridCols : root.gridCols;
+                root.activeGridRows = (override && override.gridRows > 0) ? override.gridRows : root.gridRows;
+                root.autoAnchored = false;
+                root.dragging = false;
+            }
+
+            const p = root.externalCanvasPoint();
+            root.dragCurrent = p;
+            if (!root.autoAnchored && root.pointInCanvas(p)) {
+                root.dragStart = p;
+                root.autoAnchored = true;
+                root.dragging = true;
+            }
         }
     }
 
@@ -257,9 +370,21 @@ PlasmaCore.Dialog {
         if (win !== root.nativeDragWindow) return;
         root.nativeDragActive = false;
         root.nativeDragWindow = null;
+        root.autoDragPending = false;
         if (root.visible && root.dragTriggered && root.targetWindow === win) {
             root.dragCurrent = root.externalCanvasPoint();
             root.finishDrag();
+            return;
+        }
+        if (root.visible && root.autoMode && root.targetWindow === win) {
+            root.dragCurrent = root.externalCanvasPoint();
+            if (root.autoAnchored) {
+                root.finishDrag();
+            } else {
+                // cursor never crossed into the picker this drag - nothing to commit,
+                // the native move already applied itself, so just get out of the way
+                hide();
+            }
         }
     }
 
@@ -268,6 +393,7 @@ PlasmaCore.Dialog {
             root.nativeDragActive = false;
             root.nativeDragWindow = null;
         }
+        root.autoDragPending = false;
     }
 
     function hookWindow(win) {

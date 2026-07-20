@@ -195,6 +195,22 @@
     </widget>
    </item>
    <item>
+    <widget class="QGroupBox" name="groupBox_dragauto">
+     <property name="title">
+      <string>Auto-trigger on drag</string>
+     </property>
+     <layout class="QFormLayout" name="formLayout_dragauto">
+      <item row="0" column="0">
+       <widget class="QCheckBox" name="kcfg_dragAutoTrigger">
+        <property name="text">
+         <string>Show a top-center picker whenever any window is dragged</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
     <widget class="QGroupBox" name="groupBox_monitors">
      <property name="title">
       <string>Per-monitor grid overrides</string>

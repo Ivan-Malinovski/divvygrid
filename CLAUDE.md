@@ -21,12 +21,14 @@ script API (`X-Plasma-API: declarativescript`), which exposes a full
 one-shot scripts, no separate daemon process.
 
 - **`kwinscript/metadata.json`** — KPackage metadata. `KPlugin.Id` /
-  `X-KDE-PluginKeyword` (currently `"divvygrid6"`, see "Plugin ID" below) is
+  `X-KDE-PluginKeyword` (currently `"divvygrid13"`, see "Plugin ID" below) is
   both the kwinrc config-group key (`[Script-<id>]`) and the cache key for
   KWin's in-process compiled-QML cache.
 - **`kwinscript/contents/ui/main.qml`** — the entire overlay: grid, drag/snap,
   compact mode, title bar, multi-monitor window picker, shift-to-double grid
-  resolution, overlap-resize on commit. Root is a `PlasmaCore.Dialog` (not a
+  resolution, overlap-resize on commit, hot-corner `ScreenEdgeHandler`s,
+  drag-triggered activation, and the auto-trigger-on-drag picker (see below
+  for the last two). Root is a `PlasmaCore.Dialog` (not a
   plain `QtQuick Window` — a bare `Window` with popup flags gets silently
   swallowed by the declarative-script host's own dialog presentation instead
   of appearing; this was confirmed live). `Workspace.activeWindow`,
@@ -38,7 +40,7 @@ one-shot scripts, no separate daemon process.
   `KGlobalAccel` + `QAction`; the shortcut stays user-rebindable from System
   Settings → Shortcuts, same as before.
 - **`kwinscript/contents/config/main.xml`** — kcfg schema for every config
-  entry, auto-bound into `~/.config/kwinrc` under `[Script-divvygrid6]`.
+  entry, auto-bound into `~/.config/kwinrc` under `[Script-divvygrid13]`.
 - **`kwinscript/contents/ui/config.ui`** — the Qt Widgets settings form (Qt
   Designer XML), auto-bound to kcfg entries via `kcfg_<entryName>` widget
   names, rendered by KWin's built-in "Configure..." dialog for scripts
@@ -56,8 +58,8 @@ loaded and driven entirely by `kwin_wayland`.
 Symlink the package directory in (one-time):
 
 ```
-ln -s /home/ivan/dev/divvygrid/kwinscript ~/.local/share/kwin/scripts/divvygrid6
-kwriteconfig6 --file kwinrc --group Plugins --key divvygrid6Enabled true
+ln -s /home/ivan/dev/divvygrid/kwinscript ~/.local/share/kwin/scripts/divvygrid13
+kwriteconfig6 --file kwinrc --group Plugins --key divvygrid13Enabled true
 qdbus-qt6 org.kde.KWin /KWin reconfigure
 ```
 
@@ -91,11 +93,32 @@ This has two real costs, not just cosmetic ones — learned the hard way:
   row. Whichever script currently holds the grab responds to Meta+Alt+D,
   nondeterministically.
 
-Current plugin ID is `divvygrid6` (bumped several times during development;
-consolidating back to the canonical `"divvygrid"` string is still pending —
-do it only with fresh explicit approval, since guaranteeing a clean cache
-reset for that reused ID likely needs a full `plasma-kwin_wayland.service`
-restart, which kills every running Wayland app).
+Current plugin ID is `divvygrid13` (bumped many times during development —
+every `main.qml` edit costs another bump; check `KPlugin.Id` in
+`metadata.json` for the current live value rather than trusting this doc,
+since it will drift again the next time `main.qml` changes). Consolidating
+back to the canonical `"divvygrid"` string is still pending — do it only
+with fresh explicit approval, since guaranteeing a clean cache reset for
+that reused ID likely needs a full `plasma-kwin_wayland.service` restart,
+which kills every running Wayland app.
+
+The bump procedure end-to-end, copying every config key forward (check
+`grep -A8 "\[Script-<oldId>\]" ~/.config/kwinrc` first — don't rely on
+memory of which keys were set, that has caused a lost value before):
+
+```
+sed -i 's/divvygridN/divvygridN+1/g' kwinscript/metadata.json
+ln -s /home/ivan/dev/divvygrid/kwinscript ~/.local/share/kwin/scripts/divvygridN+1
+kwriteconfig6 --file kwinrc --group "Script-divvygridN+1" --key <each key> <value>   # repeat per key found above
+kwriteconfig6 --file kwinrc --group Plugins --key divvygridN+1Enabled true
+kwriteconfig6 --file kwinrc --group Plugins --key divvygridNEnabled false
+qdbus-qt6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript divvygridN
+qdbus-qt6 org.kde.KWin /KWin reconfigure
+rm ~/.local/share/kwin/scripts/divvygridN
+kwriteconfig6 --file kwinrc --group "Script-divvygridN" --key <each key> --delete   # repeat per key
+qdbus-qt6 org.kde.KWin /Scripting org.kde.kwin.Scripting.isScriptLoaded divvygridN+1   # must print true
+journalctl --user -b --no-pager | grep -i divvygridN+1   # must be empty
+```
 
 ## Gotchas / lessons learned
 
@@ -153,7 +176,7 @@ restart, which kills every running Wayland app).
 
 ## Config schema
 
-`~/.config/kwinrc`, section `[Script-divvygrid6]` (all entries optional,
+`~/.config/kwinrc`, section `[Script-divvygrid13]` (all entries optional,
 missing = kcfg default). Edit via System Settings → Window Management → KWin
 Scripts → DivvyGrid → Configure..., or by hand with `kwriteconfig6`:
 
@@ -167,27 +190,86 @@ Scripts → DivvyGrid → Configure..., or by hand with `kwriteconfig6`:
 | `gap` | Int | 8 | px inset applied to each edge of the final placed window |
 | `resizeOverlapping` | Bool | true | shrink other windows whose edge is fully covered by a new placement |
 | `compactAtCursor` | Bool | false | compact mode: spawn overlay centered on the mouse cursor |
-| `hotCorner` | Int | 0 | 0=none,1=topLeft,2=topRight,3=bottomLeft,4=bottomRight — config value only, not yet wired to a `ScreenEdgeHandler` (see Not yet done) |
+| `hotCorner` | Int | 0 | 0=none,1=topLeft,2=topRight,3=bottomLeft,4=bottomRight, wired to a `ScreenEdgeHandler` per corner in `main.qml`, gated by `enabled: root.hotCorner === "..."` so only one is ever active |
 | `monitorsJson` | String | `{}` | JSON map of output name → `{gridCols, gridRows}` override, e.g. `{"DP-2":{"gridCols":8,"gridRows":6}}` |
+| `dragAutoTrigger` | Bool | false | auto-show a top-center picker on any native window drag past a distance threshold, no shortcut needed — see "Auto-trigger on drag" below |
 
 The global shortcut (default Meta+Alt+D) is owned by `ShortcutHandler` in
 `Shortcuts.qml`, rebindable from System Settings → Shortcuts — it's not a
 kcfg config entry.
 
+## Drag-triggered activation (shortcut mid-drag)
+
+Holding the shortcut while native-dragging a window retargets the overlay at
+that window and follows the mouse for the rest of the drag (`main.qml`'s
+`dragTriggered` state, `show(forcedTarget)`, `externalCanvasPoint()`,
+`onNativeDragStarted/Stepped/Finished`, `hookWindow()`). Always forces
+`overlayMode = "fullscreen"` regardless of the configured mode — compact's
+small cursor-centered box made the "selection must include the shortcut's
+anchor point" restriction too cramped; fullscreen has enough room to reach
+most layouts anyway. This was an explicit product decision, not a
+placeholder — don't "fix" it by trying to make compact mode work here
+without raising it first.
+
+## Auto-trigger on drag (`dragAutoTrigger`)
+
+Opt-in: shows a small top-center picker on *any* native window drag, no
+shortcut held — modeled on KZones/MouseTiler's automatic drag-triggered zone
+overlays, but architecturally distinct from drag-triggered activation above
+(no key involved at all). Relevant `main.qml` state/functions: `autoMode`,
+`autoDragPending`/`autoDragStartPos`/`autoDragThreshold` (24px), `autoAnchored`,
+`showAuto()`, `pointInCanvas()`, and the `autoMode` branches inside
+`onNativeDragStarted/Stepped/Finished`.
+
+- **Trigger**: `onNativeDragStarted` (already hooked on every window via
+  `hookWindow`/`onWindowAdded`) arms `autoDragPending` if `dragAutoTrigger` is
+  on and no overlay is already visible. `onNativeDragStepped` checks the
+  cursor's distance from the drag's start position each step; once past
+  `autoDragThreshold`, it calls `showAuto(win)`. The threshold exists so a
+  plain click-to-focus or tiny nudge doesn't flash the picker.
+- **Positioning**: fixed top-center of the screen the drag is currently on
+  (not cursor-following) — `canvasX`/`canvasY` have an `autoMode` branch
+  ahead of the normal `compactAtCursor`/`dragTriggered` cursor-anchoring
+  logic. `isCompact` is `true` whenever `autoMode` is true (forces the
+  compact-sized box regardless of the configured `mode`).
+- **Multi-cell selection without a real drag gesture**: only one point is
+  ever available (the native drag position — the overlay's own `MouseArea`
+  receives no events during a native move, same limitation as
+  drag-triggered activation above), so there's no independent
+  press-then-drag-then-release the way the shortcut-driven grid gets one for
+  free. Instead: nothing is selected until the cursor first crosses into the
+  picker's bounds (`pointInCanvas()`); that crossing point becomes a pinned
+  anchor (`dragStart`), `autoAnchored` flips true, and `root.dragging` is set
+  so the existing `rawRect()`/`computeSelBounds()`/`finishDrag()` machinery
+  takes over unmodified — continuing to drag grows a real rectangle between
+  the anchor and the live cursor position, visually identical to the
+  shortcut-driven grid. If the cursor never enters the picker before
+  release, nothing commits — the native move already applied itself, so
+  "cancel" here just means "hide and get out of the way," never "undo."
+- **Multi-monitor**: the picker is pinned to whichever screen the drag
+  started on but has to follow the cursor across monitors — each
+  `onNativeDragStepped` call re-derives the current screen via
+  `screenAt(Workspace.cursorPos)` and, if it changed, re-homes `screenGeo`/
+  `availGeo`/`activeGridCols`/`activeGridRows` (same per-monitor-override
+  lookup `show()`/`showAuto()` do initially) and drops any in-progress
+  anchor/selection, since it was expressed in the old screen's local
+  coordinates and doesn't translate. The picker then has to be re-anchored
+  on the new screen.
+- Title bar and window-switcher picker are intentionally suppressed in this
+  mode (`showAuto()` leaves `targetTitle`/`targetIconName` empty) — the
+  target window is unambiguous (it's exactly the one being dragged), so that
+  chrome would be pure noise here.
+
 ## Not yet done / known gaps
 
-- **Hot corner isn't wired up.** `hotCorner` is read into config and mapped
-  to a name, but nothing in `main.qml` registers a `ScreenEdgeHandler` or
-  otherwise acts on it yet.
-- **Drag-triggered activation isn't ported.** Holding the shortcut mid-native
-  -window-drag to retarget the overlay to the dragged window (a daemon-era
-  feature) doesn't exist in the script yet. Needs
-  `interactiveMoveResizeStarted/Stepped/Finished` hooked directly on window
-  objects, feeding the same `dragging`/`dragCurrent` state the mouse-driven
-  path already uses.
 - No `install.sh` yet — deploy manually per "Deploy / reload" above.
 - No undo/restore for a placement once committed.
 - No theme awareness or drop shadow on the overlay (flat colors only).
+- Drag-triggered activation (shortcut mid-drag, above) doesn't re-home
+  across monitors mid-drag the way the newer auto-trigger-on-drag picker
+  does — it was never reported as an issue there, so it hasn't been fixed,
+  but the same fix (screen re-derivation in `onNativeDragStepped`) would
+  apply if it ever comes up.
 - The old daemon (`main.cpp`, root-level `main.qml`, `settings/`,
   `CMakeLists.txt`) is still in the repo as a fallback but is unmaintained
   going forward and should be deleted once the script has been used for real
