@@ -657,17 +657,70 @@ PlasmaCore.Dialog {
             root.endLinkedResize();
         }
         root.autoDragPending = false;
+        // forget the window's handlers - its connections die with it, but the entry would
+        // otherwise sit in hookedWindows for the rest of the session. Only the bookkeeping
+        // is dropped here, not the connections: disconnecting win.closed from inside its
+        // own emission is exactly the case worth not being clever about.
+        for (let i = 0; i < root.hookedWindows.length; i++) {
+            if (root.hookedWindows[i].win === win) {
+                root.hookedWindows.splice(i, 1);
+                break;
+            }
+        }
     }
+
+    // Every window we've connected to, with the exact handler functions used - a closure
+    // can only be disconnected through the same reference that was connected, so these
+    // have to be retained rather than created inline at connect time.
+    //
+    // Without this, unloading the script (which bump.sh does on every deploy) tears down
+    // the root object but leaves these connections live on each window, and they then
+    // throw "Cannot read property 'onNativeDragStepped' of null" on every step of every
+    // subsequent drag - once per dead generation, accumulating for the life of the
+    // kwin_wayland process.
+    property var hookedWindows: []
 
     function hookWindow(win) {
         // interactiveMove* signals only fire for normal windows anyway, but skip
         // panels/popups/transients upfront - 4 signal connections per dot on the
         // desktop adds up, and Workspace.windowAdded fires for everything.
         if (!win.normalWindow) return;
-        win.interactiveMoveResizeStarted.connect(() => root.onNativeDragStarted(win));
-        win.interactiveMoveResizeStepped.connect(() => root.onNativeDragStepped(win));
-        win.interactiveMoveResizeFinished.connect(() => root.onNativeDragFinished(win));
-        win.closed.connect(() => root.onNativeDragWindowClosed(win));
+        const h = {
+            win: win,
+            started: () => root.onNativeDragStarted(win),
+            stepped: () => root.onNativeDragStepped(win),
+            finished: () => root.onNativeDragFinished(win),
+            closed: () => root.onNativeDragWindowClosed(win)
+        };
+        root.hookedWindows.push(h);
+        win.interactiveMoveResizeStarted.connect(h.started);
+        win.interactiveMoveResizeStepped.connect(h.stepped);
+        win.interactiveMoveResizeFinished.connect(h.finished);
+        win.closed.connect(h.closed);
+    }
+
+    function unhookWindow(win) {
+        for (let i = 0; i < root.hookedWindows.length; i++) {
+            const h = root.hookedWindows[i];
+            if (h.win !== win) continue;
+            root.hookedWindows.splice(i, 1);
+            try {
+                win.interactiveMoveResizeStarted.disconnect(h.started);
+                win.interactiveMoveResizeStepped.disconnect(h.stepped);
+                win.interactiveMoveResizeFinished.disconnect(h.finished);
+                win.closed.disconnect(h.closed);
+            } catch (e) {
+                // window already torn down - the connections went with it
+            }
+            return;
+        }
+    }
+
+    // Drop every connection before the root object goes away. Without this the handlers
+    // outlive the script and fire against a null root forever after (see hookedWindows).
+    Component.onDestruction: {
+        const hooks = root.hookedWindows.slice();
+        for (let i = 0; i < hooks.length; i++) root.unhookWindow(hooks[i].win);
     }
 
     // {id-less, direct object refs} list of every normal window across all monitors,
