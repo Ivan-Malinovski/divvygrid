@@ -24,6 +24,10 @@ directory into `~/.local/share/kwin/scripts/` and enable it.
   overlay.
 - **Compact overlay** mode for small grids and small screens, with optional
   cursor-anchored spawn.
+- **Full-size ghost preview** — while selecting in the compact grid, a
+  translucent outline of the final window rectangle is drawn 1:1 on the real
+  screen, so a selection in the miniature grid still shows you exactly what
+  you'll get.
 - **Auto-trigger picker spawns trailing the cursor's drag motion** — drag away
   from the picker rather than into it. Leaving the picker clears the selection
   anchor, so a release past the edge doesn't commit a phantom resize.

@@ -1252,6 +1252,30 @@ PlasmaCore.Dialog {
         onClicked: root.hide()
     }
 
+    // Compact mode only: a 1:1 ghost of the final window rectangle, drawn on the real
+    // screen behind the little grid box. The compact grid is a miniature of the whole
+    // output, so a selection there gives no sense of the actual size the window will end
+    // up - this is the "you are here" for that. Deliberately drawn from snappedRect()
+    // rather than rawRect(): unlike the in-canvas preview (which tracks the raw cursor so
+    // small drags still register visually), this one's whole job is to show the committed
+    // outcome, so it must land exactly where commit() will put the window - same
+    // canvas->screen mapping as finishDrag(), same windowGap inset as commit().
+    // Fullscreen mode skips it: the canvas already covers the screen 1:1 there, so the
+    // ghost would sit exactly on top of the existing selection rectangle.
+    Rectangle {
+        id: ghost
+        property rect g: root.snappedRect()
+        visible: root.isCompact && root.dragging && g.width > 0 && g.height > 0
+        x: root.availLocalX + g.x * root.scaleX + root.windowGap / 2
+        y: root.availLocalY + g.y * root.scaleY + root.windowGap / 2
+        width: Math.max(0, g.width * root.scaleX - root.windowGap)
+        height: Math.max(0, g.height * root.scaleY - root.windowGap)
+        color: root.themeAlpha(Kirigami.Theme.highlightColor, 0.18)
+        border.color: root.themeAlpha(Kirigami.Theme.highlightColor, 0.9)
+        border.width: 2
+        radius: 4
+    }
+
     Rectangle {
         id: canvas
         x: root.canvasX

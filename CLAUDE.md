@@ -180,7 +180,12 @@ app.
   live preview tracks the raw, unsnapped rectangle. Snapping floors the low
   edge / ceils the high edge (outward, enclosing), not round-to-nearest —
   rounding asymmetrically drops the start/end cell depending on which half
-  of the cell the press/release landed in.
+  of the cell the press/release landed in. **The compact-mode screen ghost is
+  the deliberate exception** — the `ghost` Rectangle in `main.qml` draws from
+  `snappedRect()`, not `rawRect()`, because its whole job is to show the
+  committed outcome at 1:1 on the real screen; it applies the same `windowGap`
+  inset `commit()` does so it lands pixel-identical to the final window. Don't
+  "consistency-fix" it to the raw rect.
 - **`QCursor`-style unreliability doesn't apply here** — `Workspace.cursorPos`
   is the privileged, always-accurate cursor position; no equivalent of the
   old daemon's "QCursor::pos() has no focused surface" problem exists inside
