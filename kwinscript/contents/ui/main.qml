@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Effects
 import org.kde.kwin
 import org.kde.kirigami as Kirigami
 import org.kde.plasma.core as PlasmaCore
@@ -52,6 +53,11 @@ PlasmaCore.Dialog {
     // never confirmed by hovering over a target cell.
     // Independent of compactAtCursor, which only affects non-autoMode compact activations.
     property bool autoAtCursor: false
+    // when true, an interactive resize drags every window whose opposite edge is flush
+    // against the edge being moved, so a shared border between two tiled windows behaves
+    // like one splitter (Windows Snap). Opt-in: it changes the feel of every manual
+    // resize, and windows that merely happen to sit flush get pulled along too.
+    property bool linkedResize: false
     // per-output {gridCols, gridRows} overrides, keyed by output name (e.g. "DP-2"),
     // parsed from the monitorsJson config entry
     property var monitorOverrides: ({})
@@ -81,6 +87,7 @@ PlasmaCore.Dialog {
         hotCorner = hotCornerNames[KWin.readConfig("hotCorner", 0)] || "none";
         dragAutoTrigger = KWin.readConfig("dragAutoTrigger", false);
         autoAtCursor = KWin.readConfig("autoAtCursor", false);
+        linkedResize = KWin.readConfig("linkedResize", false);
         try {
             const parsed = JSON.parse(KWin.readConfig("monitorsJson", "{}"));
             // JSON.parse("null")/numbers/strings don't throw but leave a non-object value,
@@ -188,6 +195,12 @@ PlasmaCore.Dialog {
         return Math.max(lo, Math.min(hi, v));
     }
 
+    // re-expresses a Kirigami theme color at a given alpha - used everywhere the overlay
+    // needs a translucent tint of a theme color rather than the opaque color itself
+    function themeAlpha(c, a) {
+        return Qt.rgba(c.r, c.g, c.b, a);
+    }
+
     // ---- show / hide ----
 
     // the output whose geometry contains the given point, falling back to activeScreen -
@@ -235,7 +248,9 @@ PlasmaCore.Dialog {
 
         // capture the window to act on before our own popup steals activation - mirrors
         // the daemon's captureActiveWindow(), just synchronous now
-        targetWindow = isDragTriggered ? forcedTarget : Workspace.activeWindow;
+        targetWindow = isDragTriggered
+            ? forcedTarget
+            : (Workspace.activeWindow && Workspace.activeWindow.normalWindow ? Workspace.activeWindow : null);
         targetTitle = targetWindow ? (targetWindow.caption || "") : "";
         targetIconName = targetWindow && targetWindow.resourceClass ? targetWindow.resourceClass.toString() : "";
         spawnCursorPos = Workspace.cursorPos;
@@ -361,9 +376,186 @@ PlasmaCore.Dialog {
         root.dragCurrent = root.externalCanvasPoint();
     }
 
+    // ---- linked resize (shared-border co-resize, gated on linkedResize) ----
+    //
+    // Windows-Snap-style: while one window is being interactively resized, every window
+    // whose opposite edge was flush against the moving edge at drag start has that edge
+    // follow along, keeping the border between them a single splitter. Nothing here
+    // touches the overlay - it's a pure side-effect of the interactiveMoveResize* signals
+    // already hooked on every window in hookWindow().
+    //
+    // Neighbours (and their pre-resize geometry) are captured once at drag start, and each
+    // step recomputes each neighbour from that snapshot plus the dragged window's total
+    // delta - never incrementally from its current geometry, which would accumulate
+    // rounding drift over a long drag and desynchronise the shared edge.
+    property var linkedNeighbors: []
+    property rect linkedStartGeo: Qt.rect(0, 0, 0, 0)
+
+    // gap-aware: DivvyGrid-placed windows sit exactly windowGap apart, so "flush" has to
+    // mean "within the gap", plus slack for hand-placed/decorated windows.
+    readonly property int linkedTol: Math.max(16, root.windowGap + 12)
+
+    function linkedCandidate(ow, win) {
+        return ow !== win && !ow.minimized && ow.normalWindow && !ow.fullScreen
+            && !(win.output && ow.output && ow.output !== win.output);
+    }
+
+    // Which coordinate is `side`'s edge of rect r? Sides are keyed L/R/T/B throughout
+    // this section, and double as the keys of the per-edge delta map in stepLinkedResize.
+    function linkedEdgeCoord(r, side) {
+        if (side === "L") return r.x;
+        if (side === "R") return r.x + r.width;
+        if (side === "T") return r.y;
+        return r.y + r.height;
+    }
+
+    // Do a and b run alongside each other on the axis perpendicular to `axis`? Overlapping
+    // counts, and so does a gap no wider than tol - two windows stacked with the usual
+    // inter-window gap are still consecutive links of the same border.
+    function linkedAbuts(a, b, axis, tol) {
+        const share = (axis === "x")
+            ? Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y)
+            : Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+        return share >= -tol;
+    }
+
+    // Record that `w`'s `follow` edge (x1 = left, x2 = right, y1 = top, y2 = bottom) tracks
+    // the dragged window's `side` edge. One entry per window, with up to four independently
+    // tracked edges: a corner drag legitimately moves two of a neighbour's edges at once,
+    // and a window collected by two different chains must merge rather than overwrite.
+    function linkedAdd(acc, w, geo, follow, side) {
+        let e = null;
+        for (let i = 0; i < acc.length; i++) {
+            if (acc[i].win === w) { e = acc[i]; break; }
+        }
+        if (!e) {
+            e = { win: w, geo: geo, dxStart: "", dxEnd: "", dyStart: "", dyEnd: "" };
+            acc.push(e);
+        }
+        const key = (follow === "x1") ? "dxStart" : (follow === "x2") ? "dxEnd"
+                  : (follow === "y1") ? "dyStart" : "dyEnd";
+        if (!e[key]) e[key] = side;  // first chain to claim an edge wins
+    }
+
+    // Walk the border that the dragged window's `side` edge lies on, collecting every
+    // window with an edge on that same line, reachable by a contiguous run of windows
+    // alongside it. Contiguity is what makes this safe: matching the line coordinate alone
+    // would rope in anything that happened to line up elsewhere on the screen.
+    function collectBorderChain(win, side, acc) {
+        const g = win.frameGeometry;
+        const tol = root.linkedTol;
+        const axis = (side === "L" || side === "R") ? "x" : "y";
+        const line = root.linkedEdgeCoord(g, side);
+        const wins = Workspace.stackingOrder;
+
+        // every candidate with either of its `axis` edges on the line. Which edge it is
+        // decides which way that window follows: a window whose LEFT edge is on the line
+        // sits to the right of the border and moves its left edge; one whose RIGHT edge is
+        // on the line sits to the left and moves its right edge. The gap between adjacent
+        // windows is absorbed by tol, so both sides test against the same line value.
+        const onLine = [];
+        for (let i = 0; i < wins.length; i++) {
+            const ow = wins[i];
+            if (!root.linkedCandidate(ow, win)) continue;
+            const c = ow.frameGeometry;
+            const s = (axis === "x") ? c.x : c.y;
+            const e = (axis === "x") ? c.x + c.width : c.y + c.height;
+            let follow = "";
+            if (Math.abs(s - line) <= tol) follow = axis + "1";
+            else if (Math.abs(e - line) <= tol) follow = axis + "2";
+            else continue;
+            onLine.push({
+                win: ow, geo: Qt.rect(c.x, c.y, c.width, c.height),
+                follow: follow, used: false
+            });
+        }
+
+        // grow outward from the dragged window until nothing new abuts the run. This is
+        // what generalises the earlier "direct neighbour + one hop" rule: in a 2x2 grid,
+        // dragging the bottom-right window's left edge reaches the bottom-left window
+        // directly, the top-right window by stacking above it, and the top-left window
+        // through that - so the whole vertical divider moves as one instead of only its
+        // bottom half.
+        const chain = [Qt.rect(g.x, g.y, g.width, g.height)];
+        let grew = true;
+        while (grew) {
+            grew = false;
+            for (let i = 0; i < onLine.length; i++) {
+                const cand = onLine[i];
+                if (cand.used) continue;
+                for (let j = 0; j < chain.length; j++) {
+                    if (!root.linkedAbuts(cand.geo, chain[j], axis, tol)) continue;
+                    cand.used = true;
+                    chain.push(cand.geo);
+                    root.linkedAdd(acc, cand.win, cand.geo, cand.follow, side);
+                    grew = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    function beginLinkedResize(win) {
+        const g = win.frameGeometry;
+        root.linkedStartGeo = Qt.rect(g.x, g.y, g.width, g.height);
+        const acc = [];
+        // all four borders unconditionally - which of them actually moves isn't known until
+        // the drag is under way (and a corner drag moves two). Sides whose delta stays 0
+        // cost nothing per step beyond the no-op check.
+        const sides = ["L", "R", "T", "B"];
+        for (let i = 0; i < sides.length; i++) root.collectBorderChain(win, sides[i], acc);
+        root.linkedNeighbors = acc;
+    }
+
+    function stepLinkedResize(win) {
+        if (root.linkedNeighbors.length === 0) return;
+        const g = win.frameGeometry, s = root.linkedStartGeo;
+        // per-edge deltas rather than a single "which handle is the user dragging" guess -
+        // this falls out correctly for corner drags, where two edges move at once.
+        const d = {
+            L: g.x - s.x,
+            R: (g.x + g.width) - (s.x + s.width),
+            T: g.y - s.y,
+            B: (g.y + g.height) - (s.y + s.height)
+        };
+        const MIN = 100;
+        for (let i = 0; i < root.linkedNeighbors.length; i++) {
+            const n = root.linkedNeighbors[i], c = n.geo;
+            const x1 = c.x + (n.dxStart ? d[n.dxStart] : 0);
+            const x2 = c.x + c.width + (n.dxEnd ? d[n.dxEnd] : 0);
+            const y1 = c.y + (n.dyStart ? d[n.dyStart] : 0);
+            const y2 = c.y + c.height + (n.dyEnd ? d[n.dyEnd] : 0);
+            if (x1 === c.x && y1 === c.y && x2 === c.x + c.width && y2 === c.y + c.height) continue;
+            // clamp rather than clip: a neighbour that would go under the minimum simply
+            // stops following, leaving the dragged window free to keep shrinking it out
+            // of the way instead of the whole drag jamming.
+            if (x2 - x1 < MIN || y2 - y1 < MIN) continue;
+            try {
+                n.win.setMaximize(false, false);
+                n.win.frameGeometry = Qt.rect(Math.round(x1), Math.round(y1),
+                                              Math.round(x2 - x1), Math.round(y2 - y1));
+            } catch (e) {
+                // neighbour destroyed mid-drag - drop it rather than throwing per step
+                root.linkedNeighbors.splice(i, 1);
+                i--;
+            }
+        }
+    }
+
+    function endLinkedResize() {
+        root.linkedNeighbors = [];
+    }
+
     function onNativeDragStarted(win) {
         root.nativeDragWindow = win;
         root.nativeDragActive = true;
+        // win.resize distinguishes an edge/corner drag from a plain move; both fire this
+        // same signal. Fullscreen windows have no meaningful neighbours to link.
+        if (root.linkedResize && win.normalWindow && win.resize && !win.fullScreen) {
+            root.beginLinkedResize(win);
+        } else {
+            root.endLinkedResize();
+        }
         // win.move is true only for genuine interactive moves; resizes fire the same
         // interactiveMoveResizeStarted signal but set win.resize instead, and the
         // picker should never pop up over a corner/edge drag. (The drag-triggered
@@ -377,6 +569,7 @@ PlasmaCore.Dialog {
 
     function onNativeDragStepped(win) {
         if (win !== root.nativeDragWindow) return;
+        root.stepLinkedResize(win);
         // shiftHeld is otherwise updated off mouse-modifier flags on the canvas
         // MouseArea, but the overlay's MouseArea gets no events during a native
         // drag (the compositor keeps the grab). KWin's QML host doesn't expose
@@ -435,6 +628,8 @@ PlasmaCore.Dialog {
 
     function onNativeDragFinished(win) {
         if (win !== root.nativeDragWindow) return;
+        root.stepLinkedResize(win);
+        root.endLinkedResize();
         root.nativeDragActive = false;
         root.nativeDragWindow = null;
         root.autoDragPending = false;
@@ -459,6 +654,7 @@ PlasmaCore.Dialog {
         if (root.nativeDragWindow === win) {
             root.nativeDragActive = false;
             root.nativeDragWindow = null;
+            root.endLinkedResize();
         }
         root.autoDragPending = false;
     }
@@ -655,6 +851,14 @@ PlasmaCore.Dialog {
         width: root.width
         height: root.height
 
+        // Complementary is the color set Plasma itself uses for OSD-style overlays that
+        // sit on top of arbitrary desktop content (e.g. the volume/brightness OSD) -
+        // dark and high-contrast by design, and it tracks the active Plasma color scheme
+        // (Breeze Dark/Light, custom schemes, etc) automatically. inherit: false so it
+        // doesn't pick up whatever color set the KWin script host's implicit parent uses.
+        Kirigami.Theme.colorSet: Kirigami.Theme.Complementary
+        Kirigami.Theme.inherit: false
+
     // mouse-only activation via KWin screen edges - same "push cursor into corner"
     // mechanism as the daemon's injected registerScreenEdge() watcher script, just
     // registered directly here instead of over D-Bus. Only one of these four is ever
@@ -708,10 +912,21 @@ PlasmaCore.Dialog {
         y: root.canvasY
         width: root.canvasWidth
         height: root.canvasHeight
-        color: root.isCompact ? "#cc1e1e1e" : "#22000000"
-        border.color: root.isCompact ? "#55ffffff" : "transparent"
+        color: root.themeAlpha(Kirigami.Theme.backgroundColor, root.isCompact ? 0.8 : 0.13)
+        border.color: root.isCompact ? root.themeAlpha(Kirigami.Theme.textColor, 0.33) : "transparent"
         border.width: root.isCompact ? 1 : 0
         radius: root.isCompact ? 6 : 0
+
+        // fullscreen mode fills the entire dialog/screen, so a shadow would have no
+        // visible edge to fall against - only worth the layer cost in compact mode,
+        // where canvas is a small floating box.
+        layer.enabled: root.isCompact
+        layer.effect: MultiEffect {
+            shadowEnabled: true
+            shadowColor: Qt.rgba(0, 0, 0, 0.6)
+            shadowBlur: 0.6
+            shadowVerticalOffset: 3
+        }
 
         Repeater {
             model: root.effCols - 1
@@ -720,7 +935,7 @@ PlasmaCore.Dialog {
                 y: 0
                 width: 1
                 height: canvas.height
-                color: "#33ffffff"
+                color: root.themeAlpha(Kirigami.Theme.textColor, 0.2)
             }
         }
         Repeater {
@@ -730,7 +945,7 @@ PlasmaCore.Dialog {
                 y: (index + 1) * (canvas.height / root.effRows)
                 width: canvas.width
                 height: 1
-                color: "#33ffffff"
+                color: root.themeAlpha(Kirigami.Theme.textColor, 0.2)
             }
         }
 
@@ -748,14 +963,14 @@ PlasmaCore.Dialog {
                 y: row * (canvas.height / root.effRows)
                 width: canvas.width / root.effCols
                 height: canvas.height / root.effRows
-                color: "#4400aaff"
+                color: root.themeAlpha(Kirigami.Theme.highlightColor, 0.27)
             }
         }
 
         Rectangle {
             visible: root.dragging
-            color: "#5500aaff"
-            border.color: "white"
+            color: root.themeAlpha(Kirigami.Theme.highlightColor, 0.33)
+            border.color: Kirigami.Theme.highlightedTextColor
             border.width: 2
             property real gapX: root.windowGap / root.scaleX
             property real gapY: root.windowGap / root.scaleY
@@ -813,10 +1028,18 @@ PlasmaCore.Dialog {
             ? canvas.y - height - 8
             : canvas.y + canvas.height + 8
         z: 30
-        color: "#dd1e1e1e"
+        color: root.themeAlpha(Kirigami.Theme.backgroundColor, 0.87)
         radius: 6
-        border.color: "#55ffffff"
+        border.color: root.themeAlpha(Kirigami.Theme.textColor, 0.33)
         border.width: 1
+
+        layer.enabled: visible
+        layer.effect: MultiEffect {
+            shadowEnabled: true
+            shadowColor: Qt.rgba(0, 0, 0, 0.6)
+            shadowBlur: 0.5
+            shadowVerticalOffset: 2
+        }
 
         Row {
             id: titleRow
@@ -830,7 +1053,7 @@ PlasmaCore.Dialog {
             }
             Text {
                 text: root.targetTitle
-                color: "white"
+                color: Kirigami.Theme.textColor
                 font.pixelSize: 13
                 elide: Text.ElideRight
                 width: Math.min(implicitWidth, 240)
@@ -838,7 +1061,7 @@ PlasmaCore.Dialog {
             }
             Text {
                 text: root.pickerOpen ? "▴" : "▾"
-                color: "#aaffffff"
+                color: Kirigami.Theme.disabledTextColor
                 font.pixelSize: 11
                 anchors.verticalCenter: parent.verticalCenter
             }
@@ -860,11 +1083,19 @@ PlasmaCore.Dialog {
         width: titleBar.width
         height: Math.min(pickerColumn.implicitHeight + 12, 220)
         z: 31
-        color: "#dd1e1e1e"
+        color: root.themeAlpha(Kirigami.Theme.backgroundColor, 0.87)
         radius: 6
-        border.color: "#55ffffff"
+        border.color: root.themeAlpha(Kirigami.Theme.textColor, 0.33)
         border.width: 1
         clip: true
+
+        layer.enabled: visible
+        layer.effect: MultiEffect {
+            shadowEnabled: true
+            shadowColor: Qt.rgba(0, 0, 0, 0.6)
+            shadowBlur: 0.5
+            shadowVerticalOffset: 2
+        }
 
         Flickable {
             anchors.fill: parent
@@ -889,12 +1120,12 @@ PlasmaCore.Dialog {
                             visible: parent.isNewGroup && index !== 0
                             width: parent.width
                             height: 1
-                            color: "#33ffffff"
+                            color: root.themeAlpha(Kirigami.Theme.textColor, 0.2)
                         }
                         Text {
                             visible: parent.isNewGroup
                             text: modelData.screen === (root.targetScreenObj ? root.targetScreenObj.name : "") ? "This Display" : modelData.screen
-                            color: "#88ffffff"
+                            color: Kirigami.Theme.disabledTextColor
                             font.pixelSize: 10
                             font.bold: true
                             topPadding: index === 0 ? 0 : 4
@@ -905,7 +1136,7 @@ PlasmaCore.Dialog {
                             width: parent.width
                             height: 28
                             radius: 4
-                            color: entryMouse.containsMouse ? "#33ffffff" : "transparent"
+                            color: entryMouse.containsMouse ? root.themeAlpha(Kirigami.Theme.highlightColor, 0.2) : "transparent"
 
                             Row {
                                 anchors.verticalCenter: parent.verticalCenter
@@ -920,7 +1151,7 @@ PlasmaCore.Dialog {
                                 }
                                 Text {
                                     text: modelData.title
-                                    color: "white"
+                                    color: Kirigami.Theme.textColor
                                     font.pixelSize: 12
                                     elide: Text.ElideRight
                                     width: pickerColumn.width - 40

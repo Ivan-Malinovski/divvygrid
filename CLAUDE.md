@@ -165,6 +165,14 @@ app.
   modifiers instead of a key handler (pointer events carry accurate
   modifiers regardless of focus), and cancel is bound to right-click instead
   of Escape.
+- **`ShortcutHandler` (org.kde.kwin) has no `enabled` property** (confirmed
+  live — `Cannot assign to non-existent property "enabled"`, fails the whole
+  component load). Unlike `ScreenEdgeHandler`, which does support live
+  `enabled:` rebinding (see the hot-corner handlers), a `ShortcutHandler`'s
+  global grab is registered for the script's entire lifetime — there's no way
+  to dynamically release it while some condition is false. Anything bound
+  this way needs a sequence that's safe to hold globally at all times (see
+  "Keyboard-only placement" below for why that ruled out bare arrow keys).
 - **Grid drag-snap semantics matter a lot for feel.** Snapping the *live
   preview* rectangle to gridlines makes small drags produce no visible
   feedback and the start corner appears to "jump." Only snap on release; the
@@ -210,6 +218,7 @@ Scripts → DivvyGrid → Configure..., or by hand with `kwriteconfig6`:
 | `hotCorner` | Int | 0 | 0=none,1=topLeft,2=topRight,3=bottomLeft,4=bottomRight, wired to a `ScreenEdgeHandler` per corner in `main.qml`, gated by `enabled: root.hotCorner === "..."` so only one is ever active |
 | `monitorsJson` | String | `{}` | JSON map of output name → `{gridCols, gridRows}` override, e.g. `{"DP-2":{"gridCols":8,"gridRows":6}}` |
 | `dragAutoTrigger` | Bool | false | auto-show a top-center picker on any native window drag past a distance threshold, no shortcut needed — see "Auto-trigger on drag" below |
+| `linkedResize` | Bool | false | co-resize windows sharing the dragged edge — see "Linked resize" below |
 | `autoAtCursor` | Bool | false | auto-trigger picker spawns trailing the cursor's drag motion — the cursor lands at the corner facing opposite the drag direction (so continuing to drag moves the cursor *away* from the picker rather than into it). Centering or fixed corner anchoring both force every selection to include the cursor's spawn cell, making single-cell picks at other cells impossible on a 1×1 picker. Also: leaving the picker clears the auto-mode anchor, so releasing past the edge does NOT commit a resize. Independent of `compactAtCursor` (which only affects non-autoMode compact activations) |
 
 The global shortcut (default Meta+Alt+D) is owned by `ShortcutHandler` in
@@ -278,9 +287,101 @@ overlays, but architecturally distinct from drag-triggered activation above
   target window is unambiguous (it's exactly the one being dragged), so that
   chrome would be pure noise here.
 
+## Linked resize (`linkedResize`)
+
+Opt-in, Windows-Snap-style: while a window is interactively resized, any window
+whose opposite edge was flush against the moving edge has that edge follow, so
+the border between two tiled windows behaves like a single splitter. Purely a
+side effect of the `interactiveMoveResize*` signals already hooked in
+`hookWindow()` — the overlay is never shown and none of the grid/selection state
+is involved. `main.qml`: `linkedNeighbors`, `linkedStartGeo`,
+`beginLinkedResize()`, `stepLinkedResize()`, `endLinkedResize()`.
+
+- **Move vs. resize**: both fire `interactiveMoveResizeStarted`; `win.resize`
+  (rather than `win.move`) is what gates this — same distinction
+  `dragAutoTrigger` already makes in the other direction.
+- **Neighbour capture is once, at drag start** — the neighbour list and each
+  neighbour's pre-resize geometry are snapshotted, and every step recomputes
+  from that snapshot plus the dragged window's *total* delta. Applying
+  per-step deltas incrementally instead accumulates rounding drift and
+  desynchronises the shared edge over a long drag.
+- **"Flush" is gap-aware**: tolerance is `max(16, windowGap + 12)`, since
+  DivvyGrid-placed windows sit exactly `windowGap` apart by construction.
+- **Per-edge deltas, not a "which handle is being dragged" guess** — corner
+  drags move two edges at once and fall out correctly for free.
+- **A border is a contiguous chain, not a set of pairwise neighbours.**
+  `collectBorderChain()` takes the line one of the dragged window's edges sits
+  on, gathers every window with an edge on that same line, then grows outward
+  from the dragged window through windows that run alongside each other
+  (`linkedAbuts`, which counts overlap *or* a gap up to `linkedTol`). Only the
+  contiguous run is linked.
+
+  Two earlier, narrower rules both failed here and are worth not re-deriving:
+  a pure "direct neighbour" rule is asymmetric (tall `L` left, `T`/`B` stacked
+  right: dragging `L`'s right edge moves both, but dragging `T`'s left edge
+  moves only `L`, stranding `B`); adding a "coplanar peer must overlap a direct
+  neighbour" hop fixed that three-window case but still failed a 2×2, where
+  the top-right window has zero overlap with the bottom-left one and so never
+  qualified — only the bottom half of the divider moved. The chain walk covers
+  both: in a 2×2, dragging the bottom-right window's left edge reaches
+  bottom-left directly, top-right by stacking, and top-left through that.
+- **Contiguity is the safety property.** Matching the line coordinate alone
+  would rope in any window that happened to line up elsewhere on screen; the
+  chain requirement is what keeps the link local to one actual border.
+- **Per-window edges are merged, not overwritten** (`linkedAdd`) — all four
+  borders are walked at drag start, so one window can be collected by two
+  chains, and a corner drag legitimately moves two of its edges at once. Each
+  entry tracks `dxStart`/`dxEnd`/`dyStart`/`dyEnd` independently; first chain
+  to claim an edge wins.
+- **Neighbours clamp rather than block**: one that would drop below 100px
+  simply stops following, so the dragged window can keep shrinking it out of
+  the way instead of the whole drag jamming.
+- Windows on other outputs, minimized, non-normal, and fullscreen windows are
+  all excluded. A neighbour destroyed mid-drag is spliced out of the list on
+  the throwing step rather than throwing once per subsequent step.
+- Each neighbour is matched on **one** edge only (first match wins in
+  left/right/top/bottom order). An L-shaped adjacency where one window is both
+  left-of and above the dragged window follows only the first — rare enough in
+  practice that it wasn't worth the extra bookkeeping.
+
+## Theme awareness
+
+The overlay's colors track the active Plasma color scheme instead of being
+hardcoded. `mainItem` sets `Kirigami.Theme.colorSet: Kirigami.Theme.Complementary`
+with `Kirigami.Theme.inherit: false` — Complementary is the same color set
+Plasma's own OSDs (volume/brightness popups) use for floating chrome over
+arbitrary desktop content: dark and high-contrast by design, and it re-derives
+automatically from Breeze Dark/Light or any custom scheme, no extra binding
+needed. All `Rectangle`/`Text` colors in `main.qml` reference
+`Kirigami.Theme.backgroundColor` / `textColor` / `highlightColor` /
+`highlightedTextColor` / `disabledTextColor`, usually through the
+`themeAlpha(c, a)` helper (a `Qt.rgba(c.r, c.g, c.b, a)` wrapper) to keep the
+existing translucent look while tracking theme hue.
+
+`titleBar` and `pickerPanel` (the floating compact-mode chrome) and `canvas`
+in compact mode get a drop shadow via `layer.enabled` + `layer.effect:
+MultiEffect { shadowEnabled: true, ... }` (`import QtQuick.Effects`, Qt6's
+replacement for the old `Qt5Compat.GraphicalEffects DropShadow`). `canvas` in
+fullscreen mode deliberately skips the shadow (`layer.enabled: root.isCompact`)
+— it fills the entire dialog/screen there, so there's no edge for a shadow to
+read against, and it would just cost a full-screen layer render for nothing.
+
 ## Not yet done / known gaps
 
-- No theme awareness or drop shadow on the overlay (flat colors only).
+- **Keyboard-only placement was attempted and reverted** — tried
+  `Meta+Alt+Arrow` to move a single-cell selection, `Meta+Alt+Shift+Arrow` to
+  grow it, `Meta+Alt+Return` to commit, all as `ShortcutHandler`s (global
+  grabs were required since `ShortcutHandler` has no `enabled` property — see
+  the gotchas entry above — so bare arrow keys were ruled out as unsafe to
+  hold globally at all times). Confirmed live: didn't work — reported as
+  "doesn't work" without further detail before being reverted, so the actual
+  failure mode (shortcuts not firing at all? firing but not producing visible
+  selection? something else?) is still unknown. If revisited, instrument
+  `onActivated` directly (e.g. a `console.log`) before assuming the rest of
+  the design (reusing `dragStart`/`dragCurrent`/`dragging` via cell-center
+  points, so `rawRect()`/`snappedRect()`/`finishDrag()` need no changes) was
+  itself at fault — that data-flow was never actually exercised if the
+  shortcuts never fired in the first place.
 - Drag-triggered activation (shortcut mid-drag, above) doesn't re-home
   across monitors mid-drag the way the newer auto-trigger-on-drag picker
   does — it was never reported as an issue there, so it hasn't been fixed,

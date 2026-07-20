@@ -70,5 +70,13 @@
             <default>false</default>
         </entry>
 
+        <!-- opt-in: when interactively resizing a window, any window whose opposite edge
+             sits flush against the dragged edge follows it, so the shared border between
+             two tiled windows moves as one (the Windows Snap behaviour). See main.qml's
+             "linked resize" section. -->
+        <entry name="linkedResize" type="Bool">
+            <default>false</default>
+        </entry>
+
     </group>
 </kcfg>

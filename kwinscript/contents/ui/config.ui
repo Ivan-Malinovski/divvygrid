@@ -218,6 +218,22 @@
     </widget>
    </item>
    <item>
+    <widget class="QGroupBox" name="groupBox_linked">
+     <property name="title">
+      <string>Linked resize</string>
+     </property>
+     <layout class="QFormLayout" name="formLayout_linked">
+      <item row="0" column="0">
+       <widget class="QCheckBox" name="kcfg_linkedResize">
+        <property name="text">
+         <string>Resize neighbouring windows that share the dragged edge</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
     <widget class="QGroupBox" name="groupBox_monitors">
      <property name="title">
       <string>Per-monitor grid overrides</string>
