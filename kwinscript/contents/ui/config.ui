@@ -207,6 +207,13 @@
         </property>
        </widget>
       </item>
+      <item row="1" column="0">
+       <widget class="QCheckBox" name="kcfg_autoAtCursor">
+        <property name="text">
+         <string>Spawn the auto-trigger picker at the cursor instead of top-center</string>
+        </property>
+       </widget>
+      </item>
      </layout>
     </widget>
    </item>

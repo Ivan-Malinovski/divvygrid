@@ -184,6 +184,7 @@ Scripts → DivvyGrid → Configure..., or by hand with `kwriteconfig6`:
 | `hotCorner` | Int | 0 | 0=none,1=topLeft,2=topRight,3=bottomLeft,4=bottomRight, wired to a `ScreenEdgeHandler` per corner in `main.qml`, gated by `enabled: root.hotCorner === "..."` so only one is ever active |
 | `monitorsJson` | String | `{}` | JSON map of output name → `{gridCols, gridRows}` override, e.g. `{"DP-2":{"gridCols":8,"gridRows":6}}` |
 | `dragAutoTrigger` | Bool | false | auto-show a top-center picker on any native window drag past a distance threshold, no shortcut needed — see "Auto-trigger on drag" below |
+| `autoAtCursor` | Bool | false | auto-trigger picker spawns trailing the cursor's drag motion — the cursor lands at the corner facing opposite the drag direction (so continuing to drag moves the cursor *away* from the picker rather than into it). Centering or fixed corner anchoring both force every selection to include the cursor's spawn cell, making single-cell picks at other cells impossible on a 1×1 picker. Also: leaving the picker clears the auto-mode anchor, so releasing past the edge does NOT commit a resize. Independent of `compactAtCursor` (which only affects non-autoMode compact activations) |
 
 The global shortcut (default Meta+Alt+D) is owned by `ShortcutHandler` in
 `Shortcuts.qml`, rebindable from System Settings → Shortcuts — it's not a

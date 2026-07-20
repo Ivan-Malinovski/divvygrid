@@ -41,6 +41,17 @@ PlasmaCore.Dialog {
     // KZones/MouseTiler's automatic drag-triggered zone overlays. Opt-in since it changes
     // the feel of every plain window move, not just shortcut-driven placements.
     property bool dragAutoTrigger: false
+    // When true, the auto-trigger picker spawns with the cursor at the corner facing the
+    // OPPOSITE direction of the drag motion (see dragDirection). Centering would force
+    // any selection to include the cursor's spawn cell - making single-cell picks at
+    // non-cursor cells impossible, and on a 1x1 picker leaving no room to drag from the
+    // middle at all. With directional corner anchoring, the cursor's first inside-picker
+    // position is at that trailing corner and dragging diagonally extends a selection
+    // away from it - AND the cursor's exit from the picker clears the anchor (see
+    // onNativeDragStepped) so a release past the edge doesn't commit a resize the user
+    // never confirmed by hovering over a target cell.
+    // Independent of compactAtCursor, which only affects non-autoMode compact activations.
+    property bool autoAtCursor: false
     // per-output {gridCols, gridRows} overrides, keyed by output name (e.g. "DP-2"),
     // parsed from the monitorsJson config entry
     property var monitorOverrides: ({})
@@ -69,6 +80,7 @@ PlasmaCore.Dialog {
         compactAtCursor = KWin.readConfig("compactAtCursor", false);
         hotCorner = hotCornerNames[KWin.readConfig("hotCorner", 0)] || "none";
         dragAutoTrigger = KWin.readConfig("dragAutoTrigger", false);
+        autoAtCursor = KWin.readConfig("autoAtCursor", false);
         try {
             const parsed = JSON.parse(KWin.readConfig("monitorsJson", "{}"));
             // JSON.parse("null")/numbers/strings don't throw but leave a non-object value,
@@ -137,13 +149,33 @@ PlasmaCore.Dialog {
     // autoMode overrides this the other way: it always sits fixed top-center (see below),
     // never follows the cursor, so it doesn't jump around as the dragged window moves.
     property bool effectiveCompactAtCursor: (compactAtCursor || dragTriggered) && !root.autoMode
+    // autoAtCursor positions the picker with the cursor at the corner facing OPPOSITE
+    // the drag's motion direction (see dragDirection). If the cursor was moving +X
+    // (rightward), the cursor lands at the picker's right edge - canvasX = cursorX -
+    // canvasWidth. If -X, the cursor lands at the picker's left edge - canvasX =
+    // cursorX. Same for Y, so dragging right-and-down pins the cursor at the
+    // picker's bottom-right, dragging left-and-up pins it at the top-left. The picker
+    // thus trails the cursor's motion, so continued dragging moves the cursor AWAY from
+    // the picker rather than into it.
     property real canvasX: root.autoMode
-        ? availLocalX + (availGeo.width - canvasWidth) / 2
+        ? (autoAtCursor
+            ? clamp(
+                spawnCursorPos.x - screenGeo.x - (root.dragDirection.x > 0 ? canvasWidth : 0),
+                availLocalX,
+                availLocalX + availGeo.width - canvasWidth
+              )
+            : availLocalX + (availGeo.width - canvasWidth) / 2)
         : (isCompact && effectiveCompactAtCursor)
             ? clamp((spawnCursorPos.x - screenGeo.x) - canvasWidth / 2, availLocalX, availLocalX + availGeo.width - canvasWidth)
             : availLocalX + (availGeo.width - canvasWidth) / 2
     property real canvasY: root.autoMode
-        ? availLocalY + 24
+        ? (autoAtCursor
+            ? clamp(
+                spawnCursorPos.y - screenGeo.y - (root.dragDirection.y > 0 ? canvasHeight : 0),
+                availLocalY,
+                availLocalY + availGeo.height - canvasHeight
+              )
+            : availLocalY + 24)
         : (isCompact && effectiveCompactAtCursor)
             ? clamp((spawnCursorPos.y - screenGeo.y) - canvasHeight / 2, availLocalY, availLocalY + availGeo.height - canvasHeight)
             : availLocalY + (availGeo.height - canvasHeight) / 2
@@ -241,6 +273,7 @@ PlasmaCore.Dialog {
         root.autoMode = false;
         root.autoDragPending = false;
         root.autoAnchored = false;
+        root.dragDirection = Qt.point(0, 0);
     }
 
     function toggle() {
@@ -292,6 +325,13 @@ PlasmaCore.Dialog {
     // true once the cursor has crossed into the picker at least once this drag and an
     // anchor corner has been pinned - before that, nothing is selected/highlighted yet
     property bool autoAnchored: false
+    // sign-of-dx/sign-of-dy of the cursor's motion from autoDragStartPos to the moment
+    // the threshold tripped. Captured in onNativeDragStepped right before showAuto, and
+    // consumed by canvasX/canvasY to spawn the picker trailing the cursor's motion
+    // direction (so continued dragging moves the cursor AWAY from the picker rather than
+    // into it - reduces accidental trigger-while-continuing). Stale between activations;
+    // reset in hide() for tidiness.
+    property point dragDirection: Qt.point(0, 0)
 
     function pointInCanvas(p) {
         return p.x >= 0 && p.x <= canvasWidth && p.y >= 0 && p.y <= canvasHeight;
@@ -349,6 +389,9 @@ PlasmaCore.Dialog {
             // but high-Hz pointers fire this on every motion tick).
             if (dx * dx + dy * dy >= root.autoDragThreshold * root.autoDragThreshold) {
                 root.autoDragPending = false;
+                // capture direction-of-motion before showAuto so the picker can spawn
+                // trailing the cursor's drag direction (see canvasX/canvasY).
+                root.dragDirection = Qt.point(Math.sign(dx), Math.sign(dy));
                 root.showAuto(win);
             }
             return;
@@ -368,7 +411,16 @@ PlasmaCore.Dialog {
 
             const p = root.externalCanvasPoint();
             root.dragCurrent = p;
-            if (!root.autoAnchored && root.pointInCanvas(p)) {
+            if (root.autoAnchored && !root.pointInCanvas(p)) {
+                // cursor left the picker - drop the anchor and any in-progress
+                // selection. onNativeDragFinished then sees autoAnchored=false and
+                // calls hide() instead of finishDrag(), so a release past the
+                // picker's edge doesn't commit a resize the user never confirmed by
+                // hovering over a target cell. On re-entry, the next branch
+                // re-anchors at the new cursor position.
+                root.autoAnchored = false;
+                root.dragging = false;
+            } else if (!root.autoAnchored && root.pointInCanvas(p)) {
                 root.dragStart = p;
                 root.autoAnchored = true;
                 root.dragging = true;

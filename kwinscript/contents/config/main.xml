@@ -62,5 +62,13 @@
             <default>false</default>
         </entry>
 
+        <!-- When true, the auto-trigger picker spawns centered on the cursor instead of
+             pinned to top-center of the work area. Kept separate from compactAtCursor
+             (which only affects non-autoMode compact activations) so each mode's
+             positioning can be tuned independently. -->
+        <entry name="autoAtCursor" type="Bool">
+            <default>false</default>
+        </entry>
+
     </group>
 </kcfg>
