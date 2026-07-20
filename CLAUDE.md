@@ -8,10 +8,11 @@ window snaps to that region.
 Ships as a **declarative KWin script** (`kwinscript/`) — no compiler, no Qt6/KF6
 dev headers, just symlink one directory into `~/.local/share/kwin/scripts/` and
 enable it. This replaced an earlier standalone Qt6/KF6 daemon (`main.cpp` +
-root-level `main.qml` + `settings/`), which is still present in the repo as a
-fallback reference but is no longer the primary implementation and will be
-deleted once the script has proven itself in daily use for a while — don't
-build or deploy it unless specifically asked to.
+root-level `main.qml` + `settings/` + `CMakeLists.txt`), deleted in `baad1e7`
+once the script had proven itself — it survives only in git history, so
+references to it below are archaeology, not files you can open. Some code
+comments still cite `main.cpp` line numbers as the origin of a ported
+algorithm; those are historical attributions.
 
 ## Architecture
 
@@ -333,9 +334,17 @@ is involved. `main.qml`: `linkedNeighbors`, `linkedStartGeo`,
   chains, and a corner drag legitimately moves two of its edges at once. Each
   entry tracks `dxStart`/`dxEnd`/`dyStart`/`dyEnd` independently; first chain
   to claim an edge wins.
-- **Neighbours clamp rather than block**: one that would drop below 100px
+- **Neighbours clamp rather than block**: one that can't take the new size
   simply stops following, so the dragged window can keep shrinking it out of
-  the way instead of the whole drag jamming.
+  the way instead of the whole drag jamming. The limits come from the window's
+  own declared `minSize`/`maxSize` (`linkedLimit()`), not just a fixed floor —
+  an app that refuses a geometry below its minimum keeps its old size, so the
+  border would otherwise slide on without it and the layout would come apart
+  mid-drag. Minimums are raised to the 100px floor, never lowered; maximums are
+  taken as-is with KWin's "unconstrained" sentinel treated as unset. Whether
+  `minSize`/`maxSize` are actually exposed to declarative scripts was never
+  confirmed live — a probe script produced no output and wasn't worth chasing —
+  so the reads are wrapped and degrade to the old fixed floor if undefined.
 - Windows on other outputs, minimized, non-normal, and fullscreen windows are
   all excluded. A neighbour destroyed mid-drag is spliced out of the list on
   the throwing step rather than throwing once per subsequent step.
@@ -382,8 +391,11 @@ read against, and it would just cost a full-screen layer render for nothing.
   points, so `rawRect()`/`snappedRect()`/`finishDrag()` need no changes) was
   itself at fault — that data-flow was never actually exercised if the
   shortcuts never fired in the first place.
-- Drag-triggered activation (shortcut mid-drag, above) doesn't re-home
-  across monitors mid-drag the way the newer auto-trigger-on-drag picker
-  does — it was never reported as an issue there, so it hasn't been fixed,
-  but the same fix (screen re-derivation in `onNativeDragStepped`) would
-  apply if it ever comes up.
+- Drag-triggered activation's mid-drag monitor re-homing was added
+  speculatively (never reported as a problem, so its feel is unvalidated).
+  Unlike the autoMode picker, which drops its anchor on a screen change,
+  this path re-seeds `dragStart` at the cursor on the new screen — there's
+  no "not yet anchored" state to fall back to, and the old anchor is in the
+  previous screen's local coordinates. Net effect: crossing a monitor
+  restarts the selection there instead of stretching a meaningless rectangle
+  between screens.

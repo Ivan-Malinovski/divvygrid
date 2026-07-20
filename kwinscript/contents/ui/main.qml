@@ -507,6 +507,27 @@ PlasmaCore.Dialog {
         root.linkedNeighbors = acc;
     }
 
+    // A window's declared size constraint on one dimension, or `fallback` if it declares
+    // none. Read defensively: whether minSize/maxSize are exposed to declarative scripts
+    // isn't something this codebase has confirmed live, and an undefined property read
+    // must degrade to the old fixed floor rather than throw once per neighbour per step.
+    //
+    // Minimums are raised to the fallback, never lowered - the 100px floor stays as a
+    // usability guard for apps that declare a uselessly small minimum. Maximums are taken
+    // as-is, with KWin's "unconstrained" sentinel treated as unset.
+    function linkedLimit(w, kind, dim, fallback) {
+        let s;
+        try {
+            s = (kind === "min") ? w.minSize : w.maxSize;
+        } catch (e) {
+            return fallback;
+        }
+        const v = s ? s[dim] : undefined;
+        if (typeof v !== "number" || v <= 0) return fallback;
+        if (kind === "max" && v >= 100000) return fallback;
+        return (kind === "min") ? Math.max(v, fallback) : v;
+    }
+
     function stepLinkedResize(win) {
         if (root.linkedNeighbors.length === 0) return;
         const g = win.frameGeometry, s = root.linkedStartGeo;
@@ -526,10 +547,20 @@ PlasmaCore.Dialog {
             const y1 = c.y + (n.dyStart ? d[n.dyStart] : 0);
             const y2 = c.y + c.height + (n.dyEnd ? d[n.dyEnd] : 0);
             if (x1 === c.x && y1 === c.y && x2 === c.x + c.width && y2 === c.y + c.height) continue;
-            // clamp rather than clip: a neighbour that would go under the minimum simply
+            // clamp rather than clip: a neighbour that can't take the new size simply
             // stops following, leaving the dragged window free to keep shrinking it out
             // of the way instead of the whole drag jamming.
-            if (x2 - x1 < MIN || y2 - y1 < MIN) continue;
+            //
+            // Honouring the window's own declared limits (not just a fixed floor) is what
+            // keeps it in sync with the border: an app that refuses a geometry smaller
+            // than its minimum just keeps its old size, so the border would slide on
+            // without it and the layout would silently come apart mid-drag.
+            const minW = root.linkedLimit(n.win, "min", "width", MIN);
+            const minH = root.linkedLimit(n.win, "min", "height", MIN);
+            const maxW = root.linkedLimit(n.win, "max", "width", 0);
+            const maxH = root.linkedLimit(n.win, "max", "height", 0);
+            if (x2 - x1 < minW || y2 - y1 < minH) continue;
+            if ((maxW > 0 && x2 - x1 > maxW) || (maxH > 0 && y2 - y1 > maxH)) continue;
             try {
                 n.win.setMaximize(false, false);
                 n.win.frameGeometry = Qt.rect(Math.round(x1), Math.round(y1),
@@ -577,7 +608,23 @@ PlasmaCore.Dialog {
         // shift-doubling during native drag activations - same as before this
         // script existed; restore parity rather than ship a broken call.
         if (root.visible && root.dragTriggered && root.targetWindow === win) {
-            root.dragCurrent = root.externalCanvasPoint();
+            // follow the cursor across monitors, same as the autoMode branch below: the
+            // overlay was homed to whichever screen the shortcut fired on, and a drag
+            // routinely leaves it. Unlike autoMode there's no anchor to drop - the
+            // selection's start point is re-seeded at the cursor on the new screen, since
+            // the old one was in the previous screen's local coordinates and doesn't
+            // translate. The effect is that crossing a monitor restarts the selection
+            // there rather than stretching a meaningless rectangle between screens.
+            const curScreen = root.screenAt(Workspace.cursorPos);
+            if (curScreen !== root.targetScreenObj) {
+                root.rehomeForScreen(curScreen);
+                const np = root.externalCanvasPoint();
+                root.dragStart = np;
+                root.dragCurrent = np;
+                root.dragging = true;
+            } else {
+                root.dragCurrent = root.externalCanvasPoint();
+            }
             return;
         }
         if (root.autoDragPending && !root.visible) {
