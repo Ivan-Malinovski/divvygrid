@@ -140,14 +140,14 @@ PlasmaCore.Dialog {
             if (line === "" || line.charAt(0) === "#") continue;
             const cut = Math.max(line.lastIndexOf("="), line.lastIndexOf(":"));
             if (cut < 1) {
-                console.warn("vibetiles: skipping unparseable monitor line:", line);
+                console.warn("vibetiles: skipping unparseable monitor line:", String(line).substring(0, 80));
                 continue;
             }
             const name = line.substring(0, cut).trim();
             const size = line.substring(cut + 1).trim().split(/[xX*]/);
             const cols = parseInt(size[0], 10), rows = parseInt(size[1], 10);
             if (name === "" || size.length !== 2 || !(cols > 0) || !(rows > 0)) {
-                console.warn("vibetiles: skipping unparseable monitor line:", line);
+                console.warn("vibetiles: skipping unparseable monitor line:", String(line).substring(0, 80));
                 continue;
             }
             out[name] = { gridCols: cols, gridRows: rows };
@@ -241,8 +241,11 @@ PlasmaCore.Dialog {
         : (isCompact && effectiveCompactAtCursor)
             ? clamp((spawnCursorPos.y - screenGeo.y) - canvasHeight / 2, availLocalY, availLocalY + availGeo.height - canvasHeight)
             : availLocalY + (availGeo.height - canvasHeight) / 2
-    property real scaleX: availGeo.width / canvasWidth
-    property real scaleY: availGeo.height / canvasHeight
+    // guard the divide: during a transient multi-monitor reconfigure canvasWidth can read
+    // 0 for a frame, and availGeo.width/0 = Infinity propagates through finishDrag() into a
+    // window geometry KWin accepts silently. Fall back to 1:1 until real dimensions arrive.
+    property real scaleX: canvasWidth > 0 ? availGeo.width / canvasWidth : 1
+    property real scaleY: canvasHeight > 0 ? availGeo.height / canvasHeight : 1
 
     property bool pickerOpen: false
 
@@ -294,6 +297,10 @@ PlasmaCore.Dialog {
 
         const isDragTriggered = !!forcedTarget;
         root.dragTriggered = isDragTriggered;
+        // a shortcut-driven activation is never the auto-drag picker - clear autoMode
+        // explicitly so a stale true (from a picker that didn't route through hide())
+        // can't leave isCompact/canvas positioning stuck in auto-mode behaviour.
+        root.autoMode = false;
         // compact mode's small, cursor-centered box makes the anchor-point restriction
         // (the selection always has to include wherever the cursor was when the shortcut
         // fired) much more cramped than in fullscreen, where there's enough room to reach
@@ -344,6 +351,10 @@ PlasmaCore.Dialog {
         root.autoDragPending = false;
         root.autoAnchored = false;
         root.dragDirection = Qt.point(0, 0);
+        // drop the compact-picker window list so a later show() can't briefly display a
+        // stale set (a window could have closed while the overlay was hidden); the next
+        // compact show() repopulates it via refreshWindowList().
+        root.windowList = [];
     }
 
     function toggle() {
@@ -451,8 +462,12 @@ PlasmaCore.Dialog {
     readonly property int linkedTol: Math.max(16, root.windowGap + 12)
 
     function linkedCandidate(ow, win) {
+        // reject a cross-output neighbour only when we positively know both outputs and
+        // they differ; if the declarative API doesn't expose output on either window, we
+        // can't tell, so fall through to the geometry checks rather than silently dropping
+        // every candidate (!= null catches both null and undefined).
         return ow !== win && !ow.minimized && ow.normalWindow && !ow.fullScreen
-            && !(win.output && ow.output && ow.output !== win.output);
+            && !(win.output != null && ow.output != null && ow.output !== win.output);
     }
 
     // Which coordinate is `side`'s edge of rect r? Sides are keyed L/R/T/B throughout
@@ -585,7 +600,18 @@ PlasmaCore.Dialog {
 
     function stepLinkedResize(win) {
         if (root.linkedNeighbors.length === 0) return;
-        const g = win.frameGeometry, s = root.linkedStartGeo;
+        // unlike the neighbour loop below (which catches per-window), this read is called
+        // straight from the interactiveMoveResize* signal handlers with no try/catch above
+        // it - if the dragged window is being destroyed mid-drag, this would throw out of
+        // the handler. Abandon the linked resize instead.
+        let g;
+        try {
+            g = win.frameGeometry;
+        } catch (e) {
+            root.endLinkedResize();
+            return;
+        }
+        const s = root.linkedStartGeo;
         // per-edge deltas rather than a single "which handle is the user dragging" guess -
         // this falls out correctly for corner drags, where two edges move at once.
         const d = {
@@ -757,8 +783,11 @@ PlasmaCore.Dialog {
             root.nativeDragActive = false;
             root.nativeDragWindow = null;
             root.endLinkedResize();
+            // only the drag we're actually tracking cancels a pending auto-trigger; a
+            // bystander window closing mid-drag must not clear it (that would swallow a
+            // legitimate pending trigger for the window still being dragged).
+            root.autoDragPending = false;
         }
-        root.autoDragPending = false;
         // forget the window's handlers - its connections die with it, but the entry would
         // otherwise sit in hookedWindows for the rest of the session. Only the bookkeeping
         // is dropped here, not the connections: disconnecting win.closed from inside its
@@ -852,6 +881,15 @@ PlasmaCore.Dialog {
     }
 
     function selectWindow(entry) {
+        // the picker list is debounced (refreshTimer), so entry.win can have closed in the
+        // gap between the last refresh and this click. Selecting a dead window sets a dead
+        // target and commit() then silently no-ops - drop the stale entry instead. The
+        // normalWindow read is itself wrapped: touching a torn-down window throws.
+        try {
+            if (!entry || !entry.win || !entry.win.normalWindow) return;
+        } catch (e) {
+            return;
+        }
         targetWindow = entry.win;
         targetTitle = entry.title;
         targetIconName = entry.icon;
@@ -931,30 +969,37 @@ PlasmaCore.Dialog {
         const others = Workspace.stackingOrder;
         for (let j = 0; j < others.length; j++) {
             const ow = others[j];
-            if (ow === root.targetWindow || ow.minimized || !ow.normalWindow) continue;
-            const c = ow.frameGeometry;
-            const ov = overlapRect(c, target);
-            if (!ov) continue;
-            let nr = null;
-            if (ov.width >= c.width - EPS) {
-                if (Math.abs(ov.y - c.y) <= EPS) {
-                    const top = ov.y + ov.height + gap;
-                    nr = Qt.rect(c.x, top, c.width, (c.y + c.height) - top);
-                } else if (Math.abs((ov.y + ov.height) - (c.y + c.height)) <= EPS) {
-                    nr = Qt.rect(c.x, c.y, c.width, (ov.y - gap) - c.y);
+            // per-window guard: a sibling destroyed mid-loop shouldn't abort adjusting the
+            // rest. The call site already has an outer try/catch, but that catches once for
+            // the whole loop - this keeps a single dead window from cutting the pass short.
+            try {
+                if (ow === root.targetWindow || ow.minimized || !ow.normalWindow) continue;
+                const c = ow.frameGeometry;
+                const ov = overlapRect(c, target);
+                if (!ov) continue;
+                let nr = null;
+                if (ov.width >= c.width - EPS) {
+                    if (Math.abs(ov.y - c.y) <= EPS) {
+                        const top = ov.y + ov.height + gap;
+                        nr = Qt.rect(c.x, top, c.width, (c.y + c.height) - top);
+                    } else if (Math.abs((ov.y + ov.height) - (c.y + c.height)) <= EPS) {
+                        nr = Qt.rect(c.x, c.y, c.width, (ov.y - gap) - c.y);
+                    }
                 }
-            }
-            if (!nr && ov.height >= c.height - EPS) {
-                if (Math.abs(ov.x - c.x) <= EPS) {
-                    const left = ov.x + ov.width + gap;
-                    nr = Qt.rect(left, c.y, (c.x + c.width) - left, c.height);
-                } else if (Math.abs((ov.x + ov.width) - (c.x + c.width)) <= EPS) {
-                    nr = Qt.rect(c.x, c.y, (ov.x - gap) - c.x, c.height);
+                if (!nr && ov.height >= c.height - EPS) {
+                    if (Math.abs(ov.x - c.x) <= EPS) {
+                        const left = ov.x + ov.width + gap;
+                        nr = Qt.rect(left, c.y, (c.x + c.width) - left, c.height);
+                    } else if (Math.abs((ov.x + ov.width) - (c.x + c.width)) <= EPS) {
+                        nr = Qt.rect(c.x, c.y, (ov.x - gap) - c.x, c.height);
+                    }
                 }
-            }
-            if (nr && nr.width > 50 && nr.height > 50) {
-                ow.setMaximize(false, false);
-                ow.frameGeometry = nr;
+                if (nr && nr.width > 50 && nr.height > 50) {
+                    ow.setMaximize(false, false);
+                    ow.frameGeometry = nr;
+                }
+            } catch (e) {
+                continue;
             }
         }
     }
@@ -1002,10 +1047,17 @@ PlasmaCore.Dialog {
         const wins = Workspace.stackingOrder;
         for (let i = 0; i < wins.length; i++) {
             const ow = wins[i];
-            if (ow === exceptWin || !root.isRealWindow(ow)) continue;
-            const c = ow.frameGeometry;
-            if (!root.overlapRect(c, root.availGeo)) continue;
-            occupied.push(c);
+            // isRealWindow() and the frameGeometry read below both touch a live window
+            // object that can vanish during the scan - a dead one simply doesn't count as
+            // occupying space, so skip it rather than throw the whole occupancy build.
+            try {
+                if (ow === exceptWin || !root.isRealWindow(ow)) continue;
+                const c = ow.frameGeometry;
+                if (!root.overlapRect(c, root.availGeo)) continue;
+                occupied.push(c);
+            } catch (e) {
+                continue;
+            }
         }
         return occupied;
     }
@@ -1043,6 +1095,7 @@ PlasmaCore.Dialog {
     // Returns a cols*rows array of booleans, indexed c * rows + r.
     function buildCellOccupancy(exceptWin) {
         const cols = root.activeGridCols, rows = root.activeGridRows;
+        if (cols <= 0 || rows <= 0) return [];
         const cellW = root.availGeo.width / cols, cellH = root.availGeo.height / rows;
         const CELL_FILL = 0.35;
         const occ = root.occupiedRects(exceptWin);
@@ -1070,6 +1123,7 @@ PlasmaCore.Dialog {
     // the gap inset on an already-snapped rect doesn't matter.
     function regionFree(r, taken) {
         const cols = root.activeGridCols, rows = root.activeGridRows;
+        if (cols <= 0 || rows <= 0) return false;
         const cellW = root.availGeo.width / cols, cellH = root.availGeo.height / rows;
         for (let c = 0; c < cols; c++) {
             for (let rr = 0; rr < rows; rr++) {
@@ -1090,6 +1144,7 @@ PlasmaCore.Dialog {
     // underneath it - the one outcome that would defeat the point.
     function findFreeRegion(forWin, placed) {
         const cols = root.activeGridCols, rows = root.activeGridRows;
+        if (cols <= 0 || rows <= 0) return null;
         const cellW = root.availGeo.width / cols, cellH = root.availGeo.height / rows;
         const inset = root.windowGap / 2;
 

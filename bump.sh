@@ -100,6 +100,13 @@ echo "  created symlink ${SCRIPTS_DIR}/${NEW_ID} -> ${SRC_DIR}"
 if [[ -n "${KEYS}" ]]; then
     while IFS= read -r key; do
         val=$(kreadconfig6 --file kwinrc --group "Script-${CURRENT_ID}" --key "${key}")
+        # an empty read means the key holds no value (or reads back as its default) - don't
+        # write a spurious empty `key=` line into the new section; leaving it unset makes
+        # the new script fall back to the same default anyway.
+        if [[ -z "${val}" ]]; then
+            echo "  skipped ${key} (empty)"
+            continue
+        fi
         kwriteconfig6 --file kwinrc --group "Script-${NEW_ID}" --key "${key}" "${val}"
         echo "  migrated ${key} = ${val}"
     done <<< "${KEYS}"
