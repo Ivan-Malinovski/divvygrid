@@ -1,6 +1,6 @@
-# DivvyGrid
+# VibeTiles
 
-A Divvy-style click-drag grid window tiler for **KDE Plasma 6 / KWin on Wayland**.
+A click-drag grid window tiler for **KDE Plasma 6 / KWin on Wayland**.
 
 Hold a global shortcut (default **Meta+Alt+D**) — a grid overlay appears — drag
 a rectangle across cells — release — the previously-active window snaps to that
@@ -75,18 +75,18 @@ and released in are always both included.
 
 ### From a `.kwinscript` bundle (recommended for users)
 
-1. Download [`divvygrid.kwinscript`](https://github.com/Ivan-Malinovski/divvygrid/releases/latest).
+1. Download [`vibetiles.kwinscript`](https://github.com/Ivan-Malinovski/vibetiles/releases/latest).
 2. **System Settings** → **Window Management** → **KWin Scripts**.
 3. Click **"Install from File..."** at the bottom of the dialog, pick the file.
-4. Enable **DivvyGrid** in the list.
+4. Enable **VibeTiles** in the list.
 5. (Optional) Rebind `Meta+Alt+D` in **System Settings → Shortcuts** if you want
    a different key — it's a regular KWin shortcut, fully rebindable.
 
 ### From source (developer install)
 
 ```sh
-git clone https://github.com/Ivan-Malinovski/divvygrid.git
-cd divvygrid
+git clone https://github.com/Ivan-Malinovski/vibetiles.git
+cd vibetiles
 ./install.sh
 ```
 
@@ -95,7 +95,7 @@ enables it, and reconfigures KWin. Idempotent — safe to re-run.
 
 ## Configuration
 
-Open **System Settings → Window Management → KWin Scripts → DivvyGrid →
+Open **System Settings → Window Management → KWin Scripts → VibeTiles →
 Configure...**.
 
 | Setting | Default | Notes |
@@ -125,11 +125,11 @@ process. Editing `main.qml` in place and reconfiguring is **not enough** —
 the plugin ID has to be bumped so KWin sees a "new" script and recompiles.
 
 ```sh
-./bump.sh         # bumps to the next divvygrid<N>, migrates kwinrc settings, reloads
+./bump.sh         # bumps to the next vibetiles<N>, migrates kwinrc settings, reloads
 ```
 
 `bump.sh` walks the symlinks in `~/.local/share/kwin/scripts/`, picks the next
-free `divvygrid<N>`, rewrites `metadata.json`, copies every per-script config
+free `vibetiles<N>`, rewrites `metadata.json`, copies every per-script config
 key forward under the new `[Script-<newId>]` section, unloads the old script,
 and verifies the new one loads. Does **not** touch `plasma-kwin_wayland.service`,
 so no Wayland apps are killed.
@@ -137,20 +137,20 @@ so no Wayland apps are killed.
 ### Building a release bundle
 
 ```sh
-./build.sh        # produces divvygrid.kwinscript (canonical ID "divvygrid")
+./build.sh        # produces vibetiles.kwinscript (canonical ID "vibetiles")
 ```
 
 `build.sh` produces the `.kwinscript` bundle with the canonical non-numeric
-plugin ID `divvygrid`, suitable for distribution. Your live dev install (on
+plugin ID `vibetiles`, suitable for distribution. Your live dev install (on
 the current numbered ID) is unaffected; `bump.sh` continues to work on it
 between releases.
 
 > **Two gotchas when installing the bundle alongside an existing dev install:**
-> 1. Don't enable both `divvygrid` and `divvygrid<N>` at the same time — both
+> 1. Don't enable both `vibetiles` and `vibetiles<N>` at the same time — both
 >    register a `ShortcutHandler` under the same name in `kglobalaccel`'s
 >    `kwin` component, producing a shortcut-ownership race (whichever loaded
 >    second wins the Meta+Alt+D grab, nondeterministically).
-> 2. Don't consolidate the live dev install to the canonical `divvygrid` —
+> 2. Don't consolidate the live dev install to the canonical `vibetiles` —
 >    the per-plugin-ID compiled-QML cache means KWin may serve a stale
 >    compiled version for a reused ID; a clean reset needs a full
 >    `plasma-kwin_wayland.service` restart, which crashes every running

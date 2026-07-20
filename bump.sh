@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bump the DivvyGrid plugin ID (forces KWin to recompile its cached QML).
+# Bump the VibeTiles plugin ID (forces KWin to recompile its cached QML).
 #
 # Why: KWin caches compiled QML per-plugin-ID for the life of the kwin_wayland
 # process. Editing main.qml in place and reconfiguring is *not* enough to pick
@@ -11,7 +11,7 @@
 #   1. finds the currently-live plugin ID by scanning for the symlink in
 #      ~/.local/share/kwin/scripts/ that points back at this package
 #      (falls back to metadata.json if no symlink exists, with a warning)
-#   2. picks the next free divvygrid<N> name not already symlinked in
+#   2. picks the next free vibetiles<N> name not already symlinked in
 #      ~/.local/share/kwin/scripts
 #   3. rewrites metadata.json to the new ID
 #   4. symlinks kwinscript/ as the new ID
@@ -23,13 +23,13 @@
 #      section
 #
 # Does NOT touch plasma-kwin_wayland.service, so no Wayland apps are killed.
-# For your first install (no DivvyGrid yet), run ./install.sh instead.
+# For your first install (no VibeTiles yet), run ./install.sh instead.
 
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
-CURRENT_ID=$(grep -oE '"divvygrid[0-9]+"' kwinscript/metadata.json | head -1 | tr -d '"')
+CURRENT_ID=$(grep -oE '"vibetiles[0-9]+"' kwinscript/metadata.json | head -1 | tr -d '"')
 SCRIPTS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/kwin/scripts"
 SRC_DIR="$(pwd)/kwinscript"
 KWINRC="${XDG_CONFIG_HOME:-$HOME/.config}/kwinrc"
@@ -40,7 +40,7 @@ KWINRC="${XDG_CONFIG_HOME:-$HOME/.config}/kwinrc"
 # previous attempt - we'd silently migrate to the wrong kwinrc section.
 SRC_REAL="$(readlink -f "${SRC_DIR}")"
 CURRENT_ID=""
-for link in "${SCRIPTS_DIR}"/divvygrid*; do
+for link in "${SCRIPTS_DIR}"/vibetiles*; do
     [[ -L "${link}" ]] || continue
     [[ "$(readlink -f "${link}")" == "${SRC_REAL}" ]] || continue
     CURRENT_ID="$(basename "${link}")"
@@ -50,17 +50,17 @@ if [[ -z "${CURRENT_ID}" ]]; then
     # No symlink at all - the script isn't installed yet, or the symlink
     # points somewhere else. Use the metadata.json ID as a last resort and
     # hope the user knows what they're doing.
-    CURRENT_ID=$(grep -oE '"divvygrid[0-9]+"' kwinscript/metadata.json | head -1 | tr -d '"')
+    CURRENT_ID=$(grep -oE '"vibetiles[0-9]+"' kwinscript/metadata.json | head -1 | tr -d '"')
     echo "warning: no symlink pointing at ${SRC_DIR} found; falling back to metadata.json ID (${CURRENT_ID}). kwinrc key migration may be inaccurate - re-run after install." >&2
 fi
 
-# Find next free ID of the form divvygridN where no symlink already exists.
+# Find next free ID of the form vibetilesN where no symlink already exists.
 # Walk forward from current; in practice the bumps are always 1.
 N=$(echo "${CURRENT_ID}" | grep -oE '[0-9]+$')
-while [[ -e "${SCRIPTS_DIR}/divvygrid$((++N))" ]]; do
+while [[ -e "${SCRIPTS_DIR}/vibetiles$((++N))" ]]; do
     : # keep walking
 done
-NEW_ID="divvygrid${N}"
+NEW_ID="vibetiles${N}"
 
 if [[ "${NEW_ID}" == "${CURRENT_ID}" ]]; then
     echo "already at ${CURRENT_ID}; nothing to bump"
@@ -136,6 +136,6 @@ echo "  verifying load..."
 LOADED=$(qdbus-qt6 org.kde.KWin /Scripting org.kde.kwin.Scripting.isScriptLoaded "${NEW_ID}")
 echo "  isScriptLoaded(${NEW_ID}) = ${LOADED}"
 echo
-echo "DivvyGrid is now at ${NEW_ID}."
+echo "VibeTiles is now at ${NEW_ID}."
 echo "If the script isn't responding, journalctl for clues:"
-echo "  journalctl --user -b --no-pager | grep -i divvygrid"
+echo "  journalctl --user -b --no-pager | grep -i vibetiles"

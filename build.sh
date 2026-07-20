@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # Build a release .kwinscript bundle for distribution.
 #
-# Output: divvygrid.kwinscript with the canonical, non-numeric plugin ID
-# "divvygrid", suitable for installing via System Settings → KWin Scripts →
+# Output: vibetiles.kwinscript with the canonical, non-numeric plugin ID
+# "vibetiles", suitable for installing via System Settings → KWin Scripts →
 # "Install from File..." or via `kpackagetool6 -t KWin/Script -i <bundle>`.
 #
 # The bundle ships under the canonical name so fresh installs land in the
-# user's scripts list as "divvygrid" rather than the numbered dev ID. Your
+# user's scripts list as "vibetiles" rather than the numbered dev ID. Your
 # live dev install (the symlink in ~/.local/share/kwin/scripts/) is NOT
 # touched - this script temporarily rewrites metadata.json for the build,
 # then restores it. Working tree ends unchanged; bump.sh continues to bump
 # the numbered dev ID on every subsequent main.qml edit.
 #
-# Does NOT consolidate the live install to "divvygrid" - that's a separate
+# Does NOT consolidate the live install to "vibetiles" - that's a separate
 # operation that requires a kwin_wayland restart to bust the per-plugin-ID
 # compiled-QML cache, which would crash every running Wayland app. The
 # numbered dev workflow keeps that restart off the table.
@@ -20,9 +20,9 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# Current dev ID (e.g. divvygrid26); canonical ID we ship under.
-DEV_ID=$(grep -oE '"divvygrid[0-9]+"' kwinscript/metadata.json | head -1 | tr -d '"')
-RELEASE_ID="divvygrid"
+# Current dev ID (e.g. vibetiles26); canonical ID we ship under.
+DEV_ID=$(grep -oE '"vibetiles[0-9]+"' kwinscript/metadata.json | head -1 | tr -d '"')
+RELEASE_ID="vibetiles"
 OUT="${RELEASE_ID}.kwinscript"
 
 if [[ ! -d kwinscript ]]; then
@@ -31,7 +31,7 @@ if [[ ! -d kwinscript ]]; then
 fi
 
 if [[ -z "${DEV_ID}" ]]; then
-    echo "error: couldn't find a divvygrid<N> ID in kwinscript/metadata.json" >&2
+    echo "error: couldn't find a vibetiles<N> ID in kwinscript/metadata.json" >&2
     exit 1
 fi
 
@@ -52,7 +52,7 @@ swap_to_release
 
 # Sanity: both ID fields (KPlugin.Id and X-KDE-PluginKeyword) must agree after
 # the swap, otherwise kpackagetool6 silently loads nothing.
-INTERNAL=$(grep -oE '"divvygrid[0-9]*"' kwinscript/metadata.json | sort -u)
+INTERNAL=$(grep -oE '"vibetiles[0-9]*"' kwinscript/metadata.json | sort -u)
 if [[ $(echo "${INTERNAL}" | wc -l) -ne 1 ]]; then
     echo "error: metadata.json ID swap left mismatched ID fields:" >&2
     echo "${INTERNAL}" >&2

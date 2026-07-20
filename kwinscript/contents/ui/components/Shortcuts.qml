@@ -9,8 +9,8 @@ Item {
     signal showOverlay()
 
     ShortcutHandler {
-        name: "DivvyGrid: Show overlay"
-        text: "DivvyGrid: Show overlay"
+        name: "VibeTiles: Show overlay"
+        text: "VibeTiles: Show overlay"
         sequence: "Meta+Alt+D"
         onActivated: {
             showOverlay();

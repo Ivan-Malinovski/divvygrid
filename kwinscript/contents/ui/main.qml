@@ -6,7 +6,7 @@ import org.kde.plasma.core as PlasmaCore
 
 import "components" as Components
 
-// Declarative KWin script port of the DivvyGrid daemon (see ../../../main.cpp /
+// Declarative KWin script port of the VibeTiles daemon (see ../../../main.cpp /
 // ../../../main.qml in the repo root for the standalone-app version this is replacing).
 // Runs entirely inside kwin_wayland: Workspace.* is the same privileged API the daemon
 // used to reach only by injecting throwaway scripts over D-Bus, now available directly
@@ -40,6 +40,11 @@ PlasmaCore.Dialog {
     // instead of leaving it hidden underneath
     property bool relocateCovered: true
     property bool compactAtCursor: false
+    // compact mode only: draw a 1:1 outline of the final window rectangle on the real
+    // screen while selecting (see the `ghost` Rectangle). On by default - the compact grid
+    // is a miniature, so without it a selection gives no sense of the resulting size - but
+    // it is extra chrome over the desktop, so it can be turned off.
+    property bool ghostPreview: true
     property string hotCorner: "none"
     // when true, any native window drag auto-shows a small top-center single-cell picker
     // after the window has moved past a threshold, no shortcut needed - modeled on
@@ -89,20 +94,65 @@ PlasmaCore.Dialog {
         resizeOverlapping = KWin.readConfig("resizeOverlapping", true);
         relocateCovered = KWin.readConfig("relocateCovered", true);
         compactAtCursor = KWin.readConfig("compactAtCursor", false);
+        ghostPreview = KWin.readConfig("ghostPreview", true);
         hotCorner = hotCornerNames[KWin.readConfig("hotCorner", 0)] || "none";
         dragAutoTrigger = KWin.readConfig("dragAutoTrigger", false);
         autoAtCursor = KWin.readConfig("autoAtCursor", false);
         linkedResize = KWin.readConfig("linkedResize", false);
-        try {
-            const parsed = JSON.parse(KWin.readConfig("monitorsJson", "{}"));
-            // JSON.parse("null")/numbers/strings don't throw but leave a non-object value,
-            // which crashes on the next monitorOverrides[name] lookup. JSON.parse("[]")
-            // would silently mis-route too - guard for both.
-            monitorOverrides = (parsed && typeof parsed === "object" && !Array.isArray(parsed)) ? parsed : {};
-        } catch (e) {
-            console.warn("divvygrid: invalid monitorsJson, using defaults:", e);
-            monitorOverrides = {};
+        monitorOverrides = root.parseMonitorOverrides(KWin.readConfig("monitorsJson", ""));
+    }
+
+    // Per-monitor grid overrides, in either of two syntaxes.
+    //
+    // The plain form is one "OUTPUT = COLSxROWS" per line, which is what the settings
+    // dialog now documents - the generic KWin-script config KCM can only do 1:1 scalar
+    // binding, so a real per-row table editor isn't available without shipping a compiled
+    // KCM, but hand-editing three tokens on a line is a great deal easier than getting
+    // nested JSON braces right in a plain text box.
+    //
+    // The original JSON object form is still accepted, unchanged: it is what any existing
+    // install already has stored, and silently dropping those overrides on upgrade would
+    // be a data-loss bug. Detected by a leading brace, so the two can't be confused.
+    function parseMonitorOverrides(text) {
+        const s = String(text || "").trim();
+        if (s === "" || s === "{}") return {};
+
+        if (s.charAt(0) === "{") {
+            try {
+                const parsed = JSON.parse(s);
+                // JSON.parse("null")/numbers/strings don't throw but leave a non-object
+                // value, which crashes on the next monitorOverrides[name] lookup.
+                // JSON.parse("[]") would silently mis-route too - guard for both.
+                if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+            } catch (e) {
+                console.warn("vibetiles: invalid monitorsJson, ignoring overrides:", e);
+            }
+            return {};
         }
+
+        // name and size are split on the LAST separator, so output names containing '='
+        // or ':' (rare, but nothing forbids them) still parse. Blank lines and #-comments
+        // are skipped so the field can carry the example as a comment.
+        const out = {};
+        const lines = s.split("\n");
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (line === "" || line.charAt(0) === "#") continue;
+            const cut = Math.max(line.lastIndexOf("="), line.lastIndexOf(":"));
+            if (cut < 1) {
+                console.warn("vibetiles: skipping unparseable monitor line:", line);
+                continue;
+            }
+            const name = line.substring(0, cut).trim();
+            const size = line.substring(cut + 1).trim().split(/[xX*]/);
+            const cols = parseInt(size[0], 10), rows = parseInt(size[1], 10);
+            if (name === "" || size.length !== 2 || !(cols > 0) || !(rows > 0)) {
+                console.warn("vibetiles: skipping unparseable monitor line:", line);
+                continue;
+            }
+            out[name] = { gridCols: cols, gridRows: rows };
+        }
+        return out;
     }
 
     Component.onCompleted: {
@@ -396,7 +446,7 @@ PlasmaCore.Dialog {
     property var linkedNeighbors: []
     property rect linkedStartGeo: Qt.rect(0, 0, 0, 0)
 
-    // gap-aware: DivvyGrid-placed windows sit exactly windowGap apart, so "flush" has to
+    // gap-aware: VibeTiles-placed windows sit exactly windowGap apart, so "flush" has to
     // mean "within the gap", plus slack for hand-placed/decorated windows.
     readonly property int linkedTol: Math.max(16, root.windowGap + 12)
 
@@ -1128,7 +1178,7 @@ PlasmaCore.Dialog {
                 covered[j].frameGeometry = Qt.rect(Math.round(spot.x), Math.round(spot.y),
                                                    Math.round(spot.width), Math.round(spot.height));
             } catch (e) {
-                console.warn("divvygrid: covered-window relocate failed:", e);
+                console.warn("vibetiles: covered-window relocate failed:", e);
             }
         }
     }
@@ -1156,7 +1206,7 @@ PlasmaCore.Dialog {
             targetWindow.frameGeometry = rect;
         } catch (e) {
             // can throw if the window is being destroyed between the read and the write
-            console.warn("divvygrid: target window vanished during commit:", e);
+            console.warn("vibetiles: target window vanished during commit:", e);
             hide();
             return;
         }
@@ -1167,7 +1217,7 @@ PlasmaCore.Dialog {
             try {
                 relocateCoveredWindows(rect, vacated);
             } catch (e) {
-                console.warn("divvygrid: covered-window relocate threw:", e);
+                console.warn("vibetiles: covered-window relocate threw:", e);
             }
         }
         if (resizeOverlapping) {
@@ -1175,7 +1225,7 @@ PlasmaCore.Dialog {
                 resizeOverlappingWindows(rect);
             } catch (e) {
                 // a sibling window we tried to make-room for was likely destroyed mid-loop
-                console.warn("divvygrid: overlap-resize threw:", e);
+                console.warn("vibetiles: overlap-resize threw:", e);
             }
         }
         hide();
@@ -1273,7 +1323,8 @@ PlasmaCore.Dialog {
     Rectangle {
         id: ghost
         property rect g: root.snappedRect()
-        visible: root.isCompact && root.dragging && g.width > 0 && g.height > 0
+        visible: root.ghostPreview && root.isCompact && root.dragging
+            && g.width > 0 && g.height > 0
         x: root.availLocalX + g.x * root.scaleX + root.windowGap / 2
         y: root.availLocalY + g.y * root.scaleY + root.windowGap / 2
         width: Math.max(0, g.width * root.scaleX - root.windowGap)

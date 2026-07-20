@@ -1,6 +1,6 @@
-# DivvyGrid
+# VibeTiles
 
-A Divvy-style click-drag window tiler for KDE Plasma 6 / KWin on Wayland. Hold a
+A click-drag window tiler for KDE Plasma 6 / KWin on Wayland. Hold a
 global shortcut (default Meta+Alt+D), a fullscreen (or compact) grid overlay
 appears, drag a rectangle across grid cells, release, and the previously-active
 window snaps to that region.
@@ -22,7 +22,7 @@ script API (`X-Plasma-API: declarativescript`), which exposes a full
 one-shot scripts, no separate daemon process.
 
 - **`kwinscript/metadata.json`** — KPackage metadata. `KPlugin.Id` /
-  `X-KDE-PluginKeyword` (currently `"divvygrid14"`, see "Plugin ID" below) is
+  `X-KDE-PluginKeyword` (currently `"vibetiles1"`, see "Plugin ID" below) is
   both the kwinrc config-group key (`[Script-<id>]`) and the cache key for
   KWin's in-process compiled-QML cache.
 - **`kwinscript/contents/ui/main.qml`** — the entire overlay: grid, drag/snap,
@@ -41,7 +41,7 @@ one-shot scripts, no separate daemon process.
   `KGlobalAccel` + `QAction`; the shortcut stays user-rebindable from System
   Settings → Shortcuts, same as before.
 - **`kwinscript/contents/config/main.xml`** — kcfg schema for every config
-  entry, auto-bound into `~/.config/kwinrc` under `[Script-divvygrid14]`.
+  entry, auto-bound into `~/.config/kwinrc` under `[Script-vibetiles1]`.
 - **`kwinscript/contents/ui/config.ui`** — the Qt Widgets settings form (Qt
   Designer XML), auto-bound to kcfg entries via `kcfg_<entryName>` widget
   names, rendered by KWin's built-in "Configure..." dialog for scripts
@@ -49,7 +49,7 @@ one-shot scripts, no separate daemon process.
   the KCM every time it opens, so changes here take effect immediately with
   no reload/cache-bump step (unlike `main.qml` — see below).
 
-No `~/.config/divvygrid/config.json`, no separate settings binary, no
+No `~/.config/vibetiles/config.json`, no separate settings binary, no
 `LayerShellQt`, no autostart `.desktop` files — System Settings' own "KWin
 Scripts" page is the enable/disable/configure surface, and the script is
 loaded and driven entirely by `kwin_wayland`.
@@ -66,29 +66,29 @@ kept here only as reference for how they behave:
 - **`./bump.sh`** — every edit to `kwinscript/contents/ui/main.qml` (or
   anything `main.qml` imports) requires this, because KWin caches compiled
   QML per plugin ID. The script rewrites `metadata.json` to the next free
-  `divvygrid<N>` name, creates a fresh symlink, migrates every key under
+  `vibetiles<N>` name, creates a fresh symlink, migrates every key under
   the old `[Script-<oldId>]` kwinrc section forward, disables + unloads
   the old ID, and verifies the new one loads.
-- **`./build.sh`** — produces `divvygrid.kwinscript`, a release bundle
-  with the canonical (non-numeric) plugin ID `divvygrid`, for installing
+- **`./build.sh`** — produces `vibetiles.kwinscript`, a release bundle
+  with the canonical (non-numeric) plugin ID `vibetiles`, for installing
   via System Settings → KWin Scripts → "Install from File..." (or
-  `kpackagetool6 -t KWin/Script -i divvygrid.kwinscript`). The script
+  `kpackagetool6 -t KWin/Script -i vibetiles.kwinscript`). The script
   temporarily swaps the ID in `metadata.json` for the tar, then restores
   it; the live dev install (on the numbered ID) is NOT touched and
   `bump.sh` continues to work on it as before. The bundle ships under
   the canonical name so a fresh install lands in the user's scripts list
-  as "divvygrid" rather than "divvygrid26".
+  as "vibetiles" rather than "vibetiles7".
 
   **Don't install the bundle alongside an existing dev install without
   disabling the dev one first** — both register a `ShortcutHandler`
-  under the same name (`DivvyGrid: Show overlay`) in kglobalaccel's
+  under the same name (`VibeTiles: Show overlay`) in kglobalaccel's
   `kwin` component, which produces a genuine shortcut-ownership race
   (whichever loads second wins the Meta+Alt+D grab, nondeterministically).
-  Either disable `divvygrid<N>Enabled` in System Settings → KWin Scripts
-  before enabling `divvygrid`, or remove the dev symlink entirely:
-  `rm ~/.local/share/kwin/scripts/divvygrid<N>`.
+  Either disable `vibetiles<N>Enabled` in System Settings → KWin Scripts
+  before enabling `vibetiles`, or remove the dev symlink entirely:
+  `rm ~/.local/share/kwin/scripts/vibetiles<N>`.
 
-  **Don't consolidate the live dev install to `divvygrid` either** — the
+  **Don't consolidate the live dev install to `vibetiles` either** — the
   per-plugin-ID compiled-QML cache means KWin may serve a stale (or
   empty) compiled version for a reused ID. A clean reset needs a full
   `plasma-kwin_wayland.service` restart, which crashes every running
@@ -128,15 +128,21 @@ of the following, which is what the old manual procedure was doing:
   row). Whichever script holds the grab responds to Meta+Alt+D,
   nondeterministically.
 
-Current plugin ID is `divvygrid14` (the integer suffix has bumped many
-times during development — every `main.qml` edit costs one. Check
-`KPlugin.Id` in `metadata.json` for the current live value rather than
-trusting this doc, since it will drift the next time `main.qml` changes).
-Consolidating back to the canonical `"divvygrid"` string is still pending
-— do it only with fresh explicit approval, since guaranteeing a clean
-cache reset for that reused ID likely needs a full
-`plasma-kwin_wayland.service` restart, which kills every running Wayland
-app.
+Current plugin ID is `vibetiles1`. The counter restarted at 1 with the
+rename from the old product name (it had reached `divvygrid58` before
+that); every `main.qml` edit still costs one. Check `KPlugin.Id` in
+`metadata.json` for the current live value rather than trusting this doc,
+since it will drift the next time `main.qml` changes.
+
+Consolidating to the canonical `"vibetiles"` string is still pending, but
+the rename made it *cheaper* than it used to be: the objection was always
+that reusing an ID with a dirty compiled-QML cache entry may serve a stale
+version, and clearing that needs a full `plasma-kwin_wayland.service`
+restart (which kills every running Wayland app). The `vibetiles` namespace
+has never been loaded, so its cache is clean — a one-time move to the
+canonical ID would not need the restart. It would still forfeit
+cache-busting for subsequent edits, so the numbered dev IDs stay either
+way. Get fresh explicit approval regardless.
 
 ## Gotchas / lessons learned
 
@@ -174,6 +180,35 @@ app.
   to dynamically release it while some condition is false. Anything bound
   this way needs a sequence that's safe to hold globally at all times (see
   "Keyboard-only placement" below for why that ruled out bare arrow keys).
+- **kglobalaccel outlives the code that registered a shortcut, and a dead
+  registration still owns the key.** Diagnosed live after the shortcut stopped
+  working for reasons unrelated to any recent change: `~/.config/kglobalshortcutsrc`
+  still had a whole `[divvygrid]` component from the *standalone daemon deleted
+  in `baad1e7`*, holding `Meta+Alt+D`. The script's own `ShortcutHandler`
+  couldn't take the sequence at registration time, so its entry in the `kwin`
+  component came up `none,none` — no binding **and no default**. Every keypress
+  was being routed to a component whose binary no longer existed.
+  - **Symptom to recognise**: the shortcut does nothing, and rebinding it in
+    System Settings doesn't help *in either direction*. A stale component
+    appears in the KCM as its own top-level app group named after the old
+    binary, so rebinding edits the corpse, not the live action.
+  - **Diagnose** with `grep -i <name> ~/.config/kglobalshortcutsrc` and
+    `qdbus-qt6 org.kde.kglobalaccel | grep -i <name>` — a `/component/<name>`
+    object path that isn't the `kwin` component is a fossil. In the `kwin`
+    component, `Action=none,none,...` means the grab was refused, not that the
+    user cleared it.
+  - **Fix**: `qdbus-qt6 org.kde.kglobalaccel /kglobalaccel
+    org.kde.KGlobalAccel.unregister <component> <action>`, then rebind. Note a
+    stored `none` is *sticky* — kglobalaccel treats it as a deliberate user
+    choice, so merely reloading the script does not restore the default. The
+    binding has to be written explicitly (`setShortcut` with flags `4` =
+    NoAutoloading; `Meta+Alt+D` is the int `402653252`).
+  - **This is the standing tax on renaming anything** — the action `name:` in
+    `Shortcuts.qml` is an identity, not a label. Changing it strands the old
+    action holding the user's key. The rename off the previous product name
+    unregistered ten of them (the overlay action plus nine left over from the
+    reverted keyboard-placement experiment, which had been sitting there
+    unnoticed since it was backed out).
 - **Grid drag-snap semantics matter a lot for feel.** Snapping the *live
   preview* rectangle to gridlines makes small drags produce no visible
   feedback and the start corner appears to "jump." Only snap on release; the
@@ -198,7 +233,7 @@ app.
   a `Component.onCompleted` probe). This is a trap when debugging: a function
   instrumented with `console.log` looks like it never ran. Every diagnostic in
   this file uses `console.warn` for that reason. Read with
-  `journalctl --user -b --no-pager | grep divvygrid`.
+  `journalctl --user -b --no-pager | grep vibetiles`.
 - **The overlay itself appears in `Workspace.stackingOrder`**, and in the
   drag-triggered path it's forced fullscreen — so any code scanning windows
   for occupied space will see a window covering the entire screen unless it
@@ -234,9 +269,9 @@ app.
 
 ## Config schema
 
-`~/.config/kwinrc`, section `[Script-divvygrid14]` (all entries optional,
+`~/.config/kwinrc`, section `[Script-vibetiles1]` (all entries optional,
 missing = kcfg default). Edit via System Settings → Window Management → KWin
-Scripts → DivvyGrid → Configure..., or by hand with `kwriteconfig6`:
+Scripts → VibeTiles → Configure..., or by hand with `kwriteconfig6`:
 
 | entry | type | default | notes |
 |---|---|---|---|
@@ -395,7 +430,7 @@ is involved. `main.qml`: `linkedNeighbors`, `linkedStartGeo`,
   per-step deltas incrementally instead accumulates rounding drift and
   desynchronises the shared edge over a long drag.
 - **"Flush" is gap-aware**: tolerance is `max(16, windowGap + 12)`, since
-  DivvyGrid-placed windows sit exactly `windowGap` apart by construction.
+  VibeTiles-placed windows sit exactly `windowGap` apart by construction.
 - **Per-edge deltas, not a "which handle is being dragged" guess** — corner
   drags move two edges at once and fall out correctly for free.
 - **A border is a contiguous chain, not a set of pairwise neighbours.**

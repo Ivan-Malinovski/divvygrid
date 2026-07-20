@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
- <class>KWin::DivvyGridConfigForm</class>
- <widget class="QWidget" name="KWin::DivvyGridConfigForm">
+ <class>KWin::VibeTilesConfigForm</class>
+ <widget class="QWidget" name="KWin::VibeTilesConfigForm">
   <property name="geometry">
    <rect>
     <x>0</x>
@@ -153,6 +153,16 @@
         </property>
        </widget>
       </item>
+      <item row="3" column="0">
+       <widget class="QCheckBox" name="kcfg_ghostPreview">
+        <property name="text">
+         <string>Preview the resulting window size on the screen</string>
+        </property>
+        <property name="toolTip">
+         <string>While selecting in the compact grid, draw an outline of the final window rectangle at full size on the real screen. The compact grid is a miniature, so on its own it gives no sense of how big the window will actually be.</string>
+        </property>
+       </widget>
+      </item>
      </layout>
     </widget>
    </item>
@@ -249,7 +259,7 @@
       <item>
        <widget class="QLabel" name="label_monitorsHint">
         <property name="text">
-         <string>Optional JSON map of output name to grid size, e.g. {"DP-2":{"gridCols":8,"gridRows":6}}. Output names match System Settings &gt; Display Configuration. Leave as {} to use the defaults above everywhere.</string>
+         <string>One monitor per line, as &lt;b&gt;name = columns x rows&lt;/b&gt; — for example:&lt;br/&gt;&lt;tt&gt;DP-2 = 8x6&lt;/tt&gt;&lt;br/&gt;&lt;tt&gt;HDMI-A-1 = 2x6&lt;/tt&gt;&lt;br/&gt;Names must match &lt;b&gt;System Settings → Display Configuration&lt;/b&gt; exactly. Lines starting with # are ignored. Leave empty to use the default grid above on every monitor. (The older JSON format still works if you already have one saved.)</string>
         </property>
         <property name="wordWrap">
          <bool>true</bool>

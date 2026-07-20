@@ -50,16 +50,26 @@
             <default>false</default>
         </entry>
 
+        <!-- compact mode only: draw a 1:1 outline of the resulting window rectangle on the
+             real screen while selecting, since the compact grid is a miniature and gives no
+             sense of the final size on its own. -->
+        <entry name="ghostPreview" type="Bool">
+            <default>true</default>
+        </entry>
+
         <!-- Int for the same reason as "mode" above - see comment there. -->
         <entry name="hotCorner" type="Int">
             <default>0</default>
         </entry>
 
-        <!-- per-output grid column/row overrides, keyed by KWin output name (e.g. "DP-2"),
-             JSON-encoded since kcfg has no native map type - same pattern as kzones'
-             layoutsJson. Example: {"DP-2":{"gridCols":8,"gridRows":6}} -->
+        <!-- per-output grid column/row overrides, keyed by KWin output name (e.g. "DP-2").
+             Free-form text since kcfg has no native map type - same pattern as kzones'
+             layoutsJson. Preferred syntax is one "DP-2 = 8x6" per line; the original JSON
+             object form ({"DP-2":{"gridCols":8,"gridRows":6}}) is still parsed for
+             existing installs. See parseMonitorOverrides() in main.qml. Kept named
+             monitorsJson so already-stored values keep resolving. -->
         <entry name="monitorsJson" type="String">
-            <default>{}</default>
+            <default></default>
         </entry>
 
         <!-- opt-in: auto-shows a small top-center single-cell picker on any native window
