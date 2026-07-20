@@ -55,7 +55,6 @@ cat <<EOF
 DivvyGrid (${PLUGIN_ID}) installed and enabled.
 
   - Trigger:        Meta+Alt+D (rebind in System Settings → Shortcuts)
-  - Undo last:      Meta+Z (rebind in System Settings → Shortcuts)
   - Configure:      System Settings → Window Management → KWin Scripts →
                     DivvyGrid → Configure...
 
