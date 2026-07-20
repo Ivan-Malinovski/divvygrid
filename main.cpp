@@ -250,6 +250,7 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("overlayMode", cfg.mode);
     engine.rootContext()->setContextProperty("compactWidth", cfg.compactWidth);
     engine.rootContext()->setContextProperty("compactHeight", cfg.compactHeight);
+    engine.rootContext()->setContextProperty("windowGap", cfg.gap);
     engine.rootContext()->setContextProperty("screenX", 0);
     engine.rootContext()->setContextProperty("screenY", 0);
     engine.rootContext()->setContextProperty("targetScreenWidth", 1920);

@@ -30,11 +30,59 @@
 #include <QTimer>
 #include <QCloseEvent>
 #include <QVector>
+#include <QTextStream>
+#include <QRegularExpression>
 
 namespace {
 
 QString configPath() {
     return QDir::homePath() + "/.config/divvygrid/config.json";
+}
+
+QString autostartDesktopPath() {
+    return QDir::homePath() + "/.config/autostart/divvygrid.desktop";
+}
+
+bool isAutostartEnabled() {
+    QFile f(autostartDesktopPath());
+    if (!f.exists()) return false;
+    if (!f.open(QIODevice::ReadOnly)) return true; // exists but unreadable - assume enabled
+    const QString contents = QString::fromUtf8(f.readAll());
+    f.close();
+    // a Hidden=true line disables a .desktop entry per the XDG spec
+    return !contents.contains(QStringLiteral("Hidden=true"));
+}
+
+void setAutostartEnabled(bool enabled) {
+    const QString path = autostartDesktopPath();
+    QFile f(path);
+    if (!f.exists()) {
+        if (!enabled) return; // nothing to disable
+        QDir().mkpath(QDir::homePath() + "/.config/autostart");
+        QFile out(path);
+        if (out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            QTextStream ts(&out);
+            ts << "[Desktop Entry]\n"
+                  "Type=Application\n"
+                  "Name=DivvyGrid\n"
+                  "Comment=Click-drag grid window placement (background service)\n"
+                  "Exec=" << QDir::homePath() << "/.local/bin/divvygrid\n"
+                  "Icon=preferences-desktop-virtual\n"
+                  "NoDisplay=true\n"
+                  "X-KDE-StartupNotify=false\n"
+                  "X-KDE-autostart-phase=1\n";
+        }
+        return;
+    }
+    if (!f.open(QIODevice::ReadOnly)) return;
+    QString contents = QString::fromUtf8(f.readAll());
+    f.close();
+    contents.remove(QRegularExpression("^Hidden=.*\\n?", QRegularExpression::MultilineOption));
+    if (!enabled) contents += "Hidden=true\n";
+    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        f.write(contents.toUtf8());
+        f.close();
+    }
 }
 
 struct MonitorRow {
@@ -100,6 +148,10 @@ public:
         m_gridRows->setValue(4);
         generalForm->addRow("Default grid rows:", m_gridRows);
 
+        m_autostart = new QCheckBox("Launch DivvyGrid automatically on login");
+        m_autostart->setChecked(isAutostartEnabled());
+        generalForm->addRow("", m_autostart);
+
         outer->addWidget(generalBox);
 
         // --- Per-monitor overrides ---
@@ -115,14 +167,22 @@ public:
         btnRow->addStretch();
         auto *saveBtn = new QPushButton("Save");
         auto *saveRestartBtn = new QPushButton("Save && Restart DivvyGrid");
+        auto *quitBtn = new QPushButton("Quit DivvyGrid");
         auto *closeBtn = new QPushButton("Close");
         btnRow->addWidget(saveBtn);
         btnRow->addWidget(saveRestartBtn);
+        btnRow->addWidget(quitBtn);
         btnRow->addWidget(closeBtn);
         outer->addLayout(btnRow);
 
         connect(saveBtn, &QPushButton::clicked, this, [this]() { save(false); });
         connect(saveRestartBtn, &QPushButton::clicked, this, [this]() { save(true); });
+        connect(quitBtn, &QPushButton::clicked, this, [this]() {
+            // "$"-anchored: an unanchored pattern also matches this settings app's own
+            // "/.local/bin/divvygrid-settings" command line (prefix match) and would kill it
+            QProcess::execute("pkill", {"-f", QDir::homePath() + "/.local/bin/divvygrid$"});
+            m_status->setText("DivvyGrid daemon stopped.");
+        });
         connect(closeBtn, &QPushButton::clicked, this, &QWidget::close);
 
         loadFromDisk();
@@ -138,6 +198,7 @@ private:
     QKeySequenceEdit *m_shortcut;
     QSpinBox *m_gridCols;
     QSpinBox *m_gridRows;
+    QCheckBox *m_autostart;
     QLabel *m_status;
     QVector<MonitorRow> m_monitorRows;
 
@@ -258,6 +319,8 @@ private:
         }
         obj["monitors"] = monitors;
 
+        setAutostartEnabled(m_autostart->isChecked());
+
         QFile f(configPath());
         if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             QMessageBox::warning(this, "Save failed",
@@ -275,7 +338,8 @@ private:
 
     void restartDaemon() {
         const QString binPath = QDir::homePath() + "/.local/bin/divvygrid";
-        QProcess::execute("pkill", {"-f", binPath});
+        // "$"-anchored, see the Quit button handler for why
+        QProcess::execute("pkill", {"-f", binPath + "$"});
         // pkill is async; give the old process a moment to actually exit before
         // relaunching, same caveat as the manual deploy steps in CLAUDE.md.
         QTimer::singleShot(700, this, [binPath]() {

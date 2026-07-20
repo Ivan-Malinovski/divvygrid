@@ -88,7 +88,38 @@ needed for QML-only edits, just restart the daemon.
   the Bash tool's `run_in_background: true`, not manual `&`/`disown` — the
   latter has been unreliable here (spurious exit 144, process not surviving).
 
+## Config schema
+
+`~/.config/divvygrid/config.json` (all fields optional, missing = default):
+
+```json
+{
+  "mode": "fullscreen",       // "fullscreen" | "compact"
+  "compactWidth": 480,
+  "compactHeight": 300,
+  "gap": 8,                   // px inset applied to each edge of the final placed window
+  "shortcut": "Meta+Alt+D",   // Qt portable-text QKeySequence string
+  "gridCols": 6,
+  "gridRows": 4,
+  "monitors": {                // per-monitor grid override, keyed by QScreen::name() (e.g. "DP-2")
+    "DP-2": { "gridCols": 8, "gridRows": 6 }
+  }
+}
+```
+
+Edit it by hand, or use the `divvygrid-settings` GUI (`settings/settings_main.cpp`, a
+separate QtWidgets executable, CMake target `divvygrid-settings`, deliberately not
+sharing code with the daemon — only the on-disk JSON schema). It also toggles
+`~/.config/autostart/divvygrid.desktop`'s `Hidden=` line for a login-autostart
+checkbox, and can restart or quit the daemon (`pkill -f ".../divvygrid$"` — note
+the `$` anchor: an unanchored pattern also matches `divvygrid-settings`'s own
+command line since it's a substring prefix).
+
 ## Not yet done / known gaps
 
 - No undo/restore for a placement once committed.
 - No theme awareness or drop shadow on the overlay (flat colors only).
+- `shortcut` string parsing (`QKeySequence(str)`) is untested against unusual key
+  combos beyond the default — the settings GUI captures it live via
+  `QKeySequenceEdit` and serializes with `QKeySequence::PortableText`, which
+  should round-trip, but hasn't been exercised end-to-end interactively.
