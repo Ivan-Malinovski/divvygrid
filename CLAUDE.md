@@ -99,6 +99,7 @@ needed for QML-only edits, just restart the daemon.
   "compactHeight": 300,
   "gap": 8,                   // px inset applied to each edge of the final placed window
   "shortcut": "Meta+Alt+D",   // Qt portable-text QKeySequence string
+  "resizeOverlapping": true,  // shrink other windows whose edge is fully covered by a new placement
   "gridCols": 6,
   "gridRows": 4,
   "monitors": {                // per-monitor grid override, keyed by QScreen::name() (e.g. "DP-2")

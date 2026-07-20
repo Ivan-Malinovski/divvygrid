@@ -152,6 +152,10 @@ public:
         m_autostart->setChecked(isAutostartEnabled());
         generalForm->addRow("", m_autostart);
 
+        m_resizeOverlapping = new QCheckBox("Resize overlapping windows to make room");
+        m_resizeOverlapping->setChecked(true);
+        generalForm->addRow("", m_resizeOverlapping);
+
         outer->addWidget(generalBox);
 
         // --- Per-monitor overrides ---
@@ -199,6 +203,7 @@ private:
     QSpinBox *m_gridCols;
     QSpinBox *m_gridRows;
     QCheckBox *m_autostart;
+    QCheckBox *m_resizeOverlapping;
     QLabel *m_status;
     QVector<MonitorRow> m_monitorRows;
 
@@ -276,6 +281,7 @@ private:
         m_gap->setValue(obj.value("gap").toInt(8));
         m_gridCols->setValue(obj.value("gridCols").toInt(6));
         m_gridRows->setValue(obj.value("gridRows").toInt(4));
+        m_resizeOverlapping->setChecked(obj.value("resizeOverlapping").toBool(true));
 
         const QString shortcutStr = obj.value("shortcut").toString("Meta+Alt+D");
         QKeySequence seq(shortcutStr);
@@ -308,6 +314,7 @@ private:
 
         obj["gridCols"] = m_gridCols->value();
         obj["gridRows"] = m_gridRows->value();
+        obj["resizeOverlapping"] = m_resizeOverlapping->isChecked();
 
         QJsonObject monitors;
         for (const MonitorRow &row : m_monitorRows) {

@@ -27,6 +27,9 @@ namespace {
 QString gActiveInternalId;
 QPoint gCursorPos;
 int gGap = 8;
+// when true, applyResize also shrinks any other window whose edge is fully covered by the
+// newly-placed window's rectangle, so the old occupant makes room instead of being covered
+bool gResizeOverlapping = true;
 // work area (screen geometry minus panels/taskbars) for the screen the cursor is on,
 // reported by the injected KWin script - QScreen::availableGeometry() does not reflect
 // panel-reserved space on this KWin/Wayland setup, so it can't be used for this
@@ -53,6 +56,9 @@ struct Config {
     int compactHeight = 300;
     int gap = 8; // px, inset from each edge of the final placed window
     QString shortcut = QStringLiteral("Meta+Alt+D"); // Qt portable-text key sequence
+    // if true, placing a window that overlaps another window's edge shrinks that other
+    // window to make room, instead of leaving it covered underneath the new placement
+    bool resizeOverlapping = true;
     QHash<QString, MonitorOverride> monitors; // keyed by QScreen::name()
 };
 
@@ -70,6 +76,7 @@ void writeDefaultConfig(const Config &c) {
     obj["compactHeight"] = c.compactHeight;
     obj["gap"] = c.gap;
     obj["shortcut"] = c.shortcut;
+    obj["resizeOverlapping"] = c.resizeOverlapping;
     QJsonObject monitors;
     for (auto it = c.monitors.constBegin(); it != c.monitors.constEnd(); ++it) {
         QJsonObject m;
@@ -104,6 +111,7 @@ Config loadConfig() {
     if (obj.contains("compactHeight")) c.compactHeight = obj["compactHeight"].toInt(c.compactHeight);
     if (obj.contains("gap")) c.gap = obj["gap"].toInt(c.gap);
     if (obj.contains("shortcut")) c.shortcut = obj["shortcut"].toString(c.shortcut);
+    if (obj.contains("resizeOverlapping")) c.resizeOverlapping = obj["resizeOverlapping"].toBool(c.resizeOverlapping);
     if (obj.contains("monitors") && obj["monitors"].isObject()) {
         const QJsonObject monitors = obj["monitors"].toObject();
         for (auto it = monitors.constBegin(); it != monitors.constEnd(); ++it) {
@@ -316,6 +324,51 @@ void applyResize(int x, int y, int w, int h) {
     const int gw = qMax(50, w - gGap);
     const int gh = qMax(50, h - gGap);
     const QString pluginName = "divvygrid-resize";
+    // if enabled, after moving the target window, shrink any other window whose edge is
+    // fully covered by the target's new rectangle so it retreats into the remaining space
+    // instead of ending up hidden underneath the target - only handles the case where the
+    // overlap spans the full width or height of the other window (a clean edge slice, e.g.
+    // dropping a window onto the bottom row of a 3x3 grid that another window fully filled);
+    // corner/partial overlaps that wouldn't leave a rectangular remainder are left alone.
+    const QString overlapScript = gResizeOverlapping ? QStringLiteral(
+        "function overlap(a, b) {\n"
+        "    var ix = Math.max(a.x, b.x), iy = Math.max(a.y, b.y);\n"
+        "    var ix2 = Math.min(a.x + a.width, b.x + b.width);\n"
+        "    var iy2 = Math.min(a.y + a.height, b.y + b.height);\n"
+        "    if (ix2 <= ix || iy2 <= iy) return null;\n"
+        "    return { x: ix, y: iy, width: ix2 - ix, height: iy2 - iy };\n"
+        "}\n"
+        "var target = { x: %2, y: %3, width: %4, height: %5 };\n"
+        "var EPS = 24;\n"
+        "var others = workspace.windowList();\n"
+        "for (var j = 0; j < others.length; j++) {\n"
+        "    var ow = others[j];\n"
+        "    if (ow.internalId.toString() === '%1' || ow.minimized || !ow.normalWindow) continue;\n"
+        "    var g = ow.frameGeometry;\n"
+        "    var c = { x: g.x, y: g.y, width: g.width, height: g.height };\n"
+        "    var ov = overlap(c, target);\n"
+        "    if (!ov) continue;\n"
+        "    var nr = null;\n"
+        "    if (ov.width >= c.width - EPS) {\n"
+        "        if (Math.abs(ov.y - c.y) <= EPS) {\n"
+        "            nr = { x: c.x, y: ov.y + ov.height, width: c.width, height: (c.y + c.height) - (ov.y + ov.height) };\n"
+        "        } else if (Math.abs((ov.y + ov.height) - (c.y + c.height)) <= EPS) {\n"
+        "            nr = { x: c.x, y: c.y, width: c.width, height: ov.y - c.y };\n"
+        "        }\n"
+        "    }\n"
+        "    if (!nr && ov.height >= c.height - EPS) {\n"
+        "        if (Math.abs(ov.x - c.x) <= EPS) {\n"
+        "            nr = { x: ov.x + ov.width, y: c.y, width: (c.x + c.width) - (ov.x + ov.width), height: c.height };\n"
+        "        } else if (Math.abs((ov.x + ov.width) - (c.x + c.width)) <= EPS) {\n"
+        "            nr = { x: c.x, y: c.y, width: ov.x - c.x, height: c.height };\n"
+        "        }\n"
+        "    }\n"
+        "    if (nr && nr.width > 50 && nr.height > 50) {\n"
+        "        ow.setMaximize(false, false);\n"
+        "        ow.frameGeometry = nr;\n"
+        "    }\n"
+        "}\n"
+    ).arg(gActiveInternalId).arg(gx).arg(gy).arg(gw).arg(gh) : QString();
     const QString script = QStringLiteral(
         "var windows = workspace.windowList();\n"
         "for (var i = 0; i < windows.length; i++) {\n"
@@ -325,7 +378,7 @@ void applyResize(int x, int y, int w, int h) {
         "        break;\n"
         "    }\n"
         "}\n"
-    ).arg(gActiveInternalId).arg(gx).arg(gy).arg(gw).arg(gh);
+    ).arg(gActiveInternalId).arg(gx).arg(gy).arg(gw).arg(gh) + overlapScript;
     const QString path = writeTempScript("divvygrid-resize.js", script);
     loadRunUnload(path, pluginName);
 }
@@ -399,6 +452,7 @@ int main(int argc, char *argv[]) {
 
     const Config cfg = loadConfig();
     gGap = cfg.gap;
+    gResizeOverlapping = cfg.resizeOverlapping;
 
     Controller controller;
     QQmlApplicationEngine engine;
