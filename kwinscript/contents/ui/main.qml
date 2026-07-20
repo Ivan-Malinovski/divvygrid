@@ -364,7 +364,12 @@ PlasmaCore.Dialog {
     function onNativeDragStarted(win) {
         root.nativeDragWindow = win;
         root.nativeDragActive = true;
-        if (root.dragAutoTrigger && !root.visible && win.normalWindow) {
+        // win.move is true only for genuine interactive moves; resizes fire the same
+        // interactiveMoveResizeStarted signal but set win.resize instead, and the
+        // picker should never pop up over a corner/edge drag. (The drag-triggered
+        // activation path above is intentionally left unguarded - if the user holds
+        // the shortcut mid-resize, that's their explicit choice to retarget.)
+        if (root.dragAutoTrigger && !root.visible && win.normalWindow && win.move) {
             root.autoDragPending = true;
             root.autoDragStartPos = Workspace.cursorPos;
         }
