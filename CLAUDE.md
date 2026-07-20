@@ -68,6 +68,32 @@ kept here only as reference for how they behave:
   `divvygrid<N>` name, creates a fresh symlink, migrates every key under
   the old `[Script-<oldId>]` kwinrc section forward, disables + unloads
   the old ID, and verifies the new one loads.
+- **`./build.sh`** — produces `divvygrid.kwinscript`, a release bundle
+  with the canonical (non-numeric) plugin ID `divvygrid`, for installing
+  via System Settings → KWin Scripts → "Install from File..." (or
+  `kpackagetool6 -t KWin/Script -i divvygrid.kwinscript`). The script
+  temporarily swaps the ID in `metadata.json` for the tar, then restores
+  it; the live dev install (on the numbered ID) is NOT touched and
+  `bump.sh` continues to work on it as before. The bundle ships under
+  the canonical name so a fresh install lands in the user's scripts list
+  as "divvygrid" rather than "divvygrid26".
+
+  **Don't install the bundle alongside an existing dev install without
+  disabling the dev one first** — both register a `ShortcutHandler`
+  under the same name (`DivvyGrid: Show overlay`) in kglobalaccel's
+  `kwin` component, which produces a genuine shortcut-ownership race
+  (whichever loads second wins the Meta+Alt+D grab, nondeterministically).
+  Either disable `divvygrid<N>Enabled` in System Settings → KWin Scripts
+  before enabling `divvygrid`, or remove the dev symlink entirely:
+  `rm ~/.local/share/kwin/scripts/divvygrid<N>`.
+
+  **Don't consolidate the live dev install to `divvygrid` either** — the
+  per-plugin-ID compiled-QML cache means KWin may serve a stale (or
+  empty) compiled version for a reused ID. A clean reset needs a full
+  `plasma-kwin_wayland.service` restart, which crashes every running
+  Wayland app. The numbered-ID dev workflow exists specifically to keep
+  that restart off the table; merging the two is a separate operation
+  with a real cost.
 
 - **`config.ui` / `main.xml` changes**: take effect immediately — just
   reopen System Settings' "Configure..." dialog for the script, no reload
