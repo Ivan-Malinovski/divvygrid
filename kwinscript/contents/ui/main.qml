@@ -70,6 +70,10 @@ PlasmaCore.Dialog {
     // per-output {gridCols, gridRows} overrides, keyed by output name (e.g. "DP-2"),
     // parsed from the monitorsJson config entry
     property var monitorOverrides: ({})
+    // last raw monitorsJson string we parsed, so loadConfig() (run on every show/showAuto,
+    // i.e. on every native drag when dragAutoTrigger is on) can skip re-parsing when the
+    // stored value is unchanged. Sentinel init guarantees the first loadConfig parses.
+    property string monitorsJsonRaw: "￿"
     // grid size actually in effect for the screen the overlay is showing on - the
     // per-monitor override if one matches targetScreenObj.name, else the defaults above.
     // effCols/effRows (the shift-doubling multiplier) are derived from these, not
@@ -99,7 +103,13 @@ PlasmaCore.Dialog {
         dragAutoTrigger = KWin.readConfig("dragAutoTrigger", false);
         autoAtCursor = KWin.readConfig("autoAtCursor", false);
         linkedResize = KWin.readConfig("linkedResize", false);
-        monitorOverrides = root.parseMonitorOverrides(KWin.readConfig("monitorsJson", ""));
+        // reading the config string is cheap; re-parsing it (JSON.parse or line-splitting)
+        // every activation is the part worth avoiding - only re-parse when it changed.
+        const rawMonitors = KWin.readConfig("monitorsJson", "");
+        if (rawMonitors !== root.monitorsJsonRaw) {
+            root.monitorsJsonRaw = rawMonitors;
+            root.monitorOverrides = root.parseMonitorOverrides(rawMonitors);
+        }
     }
 
     // Per-monitor grid overrides, in either of two syntaxes.
@@ -274,6 +284,20 @@ PlasmaCore.Dialog {
             }
         }
         return Workspace.activeScreen;
+    }
+
+    // screenAt() scans every output, but a native drag fires per motion tick and the cursor
+    // is almost always still on the screen the overlay is already homed to. Check that one's
+    // bounds first and only fall back to the full scan when the cursor has actually crossed
+    // out of it - behaviour-identical (non-overlapping outputs), just cheaper per step.
+    function currentDragScreen() {
+        const s = root.targetScreenObj;
+        if (s) {
+            const g = s.geometry;
+            const p = Workspace.cursorPos;
+            if (p.x >= g.x && p.x < g.x + g.width && p.y >= g.y && p.y < g.y + g.height) return s;
+        }
+        return root.screenAt(Workspace.cursorPos);
     }
 
     // applies screen-specific state for the given screen object: replaces targetScreenObj,
@@ -696,7 +720,7 @@ PlasmaCore.Dialog {
             // the old one was in the previous screen's local coordinates and doesn't
             // translate. The effect is that crossing a monitor restarts the selection
             // there rather than stretching a meaningless rectangle between screens.
-            const curScreen = root.screenAt(Workspace.cursorPos);
+            const curScreen = root.currentDragScreen();
             if (curScreen !== root.targetScreenObj) {
                 root.rehomeForScreen(curScreen);
                 const np = root.externalCanvasPoint();
@@ -728,7 +752,7 @@ PlasmaCore.Dialog {
             // grid override) to follow the cursor's current screen. Any in-progress
             // anchor/selection is screen-local, so it gets dropped and has to be
             // re-picked on the new screen rather than translated.
-            const curScreen = root.screenAt(Workspace.cursorPos);
+            const curScreen = root.currentDragScreen();
             if (curScreen !== root.targetScreenObj) {
                 root.rehomeForScreen(curScreen);
                 root.autoAnchored = false;
@@ -1142,7 +1166,9 @@ PlasmaCore.Dialog {
     // desktop because a floating window straddling a boundary clips every candidate near it.
     // The placement itself counts as an occupier, so the window can never be sent back
     // underneath it - the one outcome that would defeat the point.
-    function findFreeRegion(forWin, placed) {
+    // `taken` (a buildCellOccupancy result excluding forWin) may be passed in by a caller
+    // that already has it, to avoid rebuilding the same occupancy grid twice per window.
+    function findFreeRegion(forWin, placed, taken) {
         const cols = root.activeGridCols, rows = root.activeGridRows;
         if (cols <= 0 || rows <= 0) return null;
         const cellW = root.availGeo.width / cols, cellH = root.availGeo.height / rows;
@@ -1152,7 +1178,7 @@ PlasmaCore.Dialog {
         const minW = Math.max(200, root.linkedLimit(forWin, "min", "width", 0));
         const minH = Math.max(150, root.linkedLimit(forWin, "min", "height", 0));
 
-        const taken = root.buildCellOccupancy(forWin);
+        if (!taken) taken = root.buildCellOccupancy(forWin);
 
         let best = null, bestScore = 0;
         for (let c1 = 0; c1 < cols; c1++) {
@@ -1209,8 +1235,11 @@ PlasmaCore.Dialog {
             && !root.overlapRect(vacated, target);
         for (let j = 0; j < covered.length; j++) {
             // recomputed per window, so two windows covered by one placement can't both be
-            // sent to the same spot - the first one placed counts as occupied for the next
-            let spot = root.findFreeRegion(covered[j], target);
+            // sent to the same spot - the first one placed counts as occupied for the next.
+            // Built once here and shared by findFreeRegion and the vacated-slot fallback,
+            // which both need the same occupancy grid (exceptWin = this covered window).
+            const taken = root.buildCellOccupancy(covered[j]);
+            let spot = root.findFreeRegion(covered[j], target, taken);
             if (!spot && swapAvailable) {
                 // The vacated slot is whatever geometry the placed window happened to have,
                 // which for a floating window is an arbitrary rectangle - dropping the
@@ -1220,7 +1249,7 @@ PlasmaCore.Dialog {
                 // grid region around a floating window is not necessarily free).
                 const snapped = root.snapRectToGrid(vacated);
                 const usable = !root.overlapRect(snapped, target)
-                    && root.regionFree(snapped, root.buildCellOccupancy(covered[j]));
+                    && root.regionFree(snapped, taken);
                 spot = usable ? snapped : vacated;
                 swapAvailable = false;  // one window per vacated slot
             }
