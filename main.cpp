@@ -724,15 +724,23 @@ int main(int argc, char *argv[]) {
         // per-monitor grid override (keyed by QScreen::name(), e.g. "DP-2") takes
         // priority; otherwise fall back to the global default, swapping cols/rows to
         // keep grid cells roughly square-ish on a portrait screen
+        const bool portrait = geo.height() > geo.width();
         const auto overrideIt = cfg.monitors.constFind(screen->name());
         if (overrideIt != cfg.monitors.constEnd()) {
             engine.rootContext()->setContextProperty("gridCols", overrideIt.value().gridCols);
             engine.rootContext()->setContextProperty("gridRows", overrideIt.value().gridRows);
         } else {
-            const bool portrait = geo.height() > geo.width();
             engine.rootContext()->setContextProperty("gridCols", portrait ? cfg.gridRows : cfg.gridCols);
             engine.rootContext()->setContextProperty("gridRows", portrait ? cfg.gridCols : cfg.gridRows);
         }
+
+        // compact mode: the overlay box itself must follow the same swap, or its fixed
+        // compactWidth x compactHeight shape ends up mismatched with the now-swapped grid,
+        // producing badly-proportioned (cramped) cells on a portrait screen
+        const bool boxIsPortrait = cfg.compactHeight > cfg.compactWidth;
+        const bool swapCompactBox = cfg.mode == QLatin1String("compact") && (portrait != boxIsPortrait);
+        engine.rootContext()->setContextProperty("compactWidth", swapCompactBox ? cfg.compactHeight : cfg.compactWidth);
+        engine.rootContext()->setContextProperty("compactHeight", swapCompactBox ? cfg.compactWidth : cfg.compactHeight);
 
         if (window && windowScreen != screen) {
             window->hide();

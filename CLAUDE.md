@@ -18,12 +18,18 @@ window snaps to that region.
   KWin scripts have no file/config API, so they report back via
   `callDBus(...)` into `AppService` (`org.divvygrid.App` at `/App`), exported
   over the session bus.
-- **`~/.local/share/divvygrid/main.qml`** — the overlay UI itself: a
-  transparent, borderless `LayerShellQt` layer-shell surface
-  (`org.kde.layershell`, layer `Overlay`) covering one screen. Draws the grid,
-  handles the drag (raw/unsnapped rect for live preview, floor/ceil-snapped
-  rect only computed on release — see gotchas), and calls back into C++
-  (`controller.commit(...)`/`controller.cancel()`).
+- **`main.qml`** — the overlay UI itself: a transparent, borderless
+  `LayerShellQt` layer-shell surface (`org.kde.layershell`, layer `Overlay`)
+  covering one screen. Draws the grid, handles the drag (raw/unsnapped rect
+  for live preview, floor/ceil-snapped rect only computed on release — see
+  gotchas), and calls back into C++ (`controller.commit(...)`/
+  `controller.cancel()`). Lives in the repo like any other source file, but
+  the daemon loads it at runtime from `~/.local/share/divvygrid/main.qml`,
+  which is a **symlink back into this repo** — this keeps the "edit QML,
+  just restart, no rebuild" workflow working while still making it
+  version-controlled. Don't `cp` over that path when deploying; if the
+  symlink is ever missing, recreate it with
+  `ln -s /home/ivan/dev/divvygrid/main.qml ~/.local/share/divvygrid/main.qml`.
 - **`~/.config/divvygrid/config.json`** — user config, written with defaults
   on first run, read once at daemon startup (`loadConfig()` in `main.cpp`).
   Changing it requires restarting the daemon.
