@@ -39,6 +39,13 @@
             <default>true</default>
         </entry>
 
+        <!-- when a placement completely covers another window - which resizeOverlapping's
+             edge-slice shrink cannot handle, so the window ends up hidden underneath -
+             move that window to the largest free grid region instead. -->
+        <entry name="relocateCovered" type="Bool">
+            <default>true</default>
+        </entry>
+
         <entry name="compactAtCursor" type="Bool">
             <default>false</default>
         </entry>

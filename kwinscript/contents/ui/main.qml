@@ -35,6 +35,10 @@ PlasmaCore.Dialog {
     property int compactHeight: 300
     property int windowGap: 8
     property bool resizeOverlapping: true
+    // when a placement completely covers another window (which resizeOverlapping's
+    // edge-slice shrink can't handle), move that window to the largest free grid region
+    // instead of leaving it hidden underneath
+    property bool relocateCovered: true
     property bool compactAtCursor: false
     property string hotCorner: "none"
     // when true, any native window drag auto-shows a small top-center single-cell picker
@@ -83,6 +87,7 @@ PlasmaCore.Dialog {
         compactHeight = KWin.readConfig("compactHeight", 300);
         windowGap = KWin.readConfig("gap", 8);
         resizeOverlapping = KWin.readConfig("resizeOverlapping", true);
+        relocateCovered = KWin.readConfig("relocateCovered", true);
         compactAtCursor = KWin.readConfig("compactAtCursor", false);
         hotCorner = hotCornerNames[KWin.readConfig("hotCorner", 0)] || "none";
         dragAutoTrigger = KWin.readConfig("dragAutoTrigger", false);
@@ -896,6 +901,100 @@ PlasmaCore.Dialog {
         }
     }
 
+    // ---- relocate fully-covered windows (gated on relocateCovered) ----
+    //
+    // resizeOverlappingWindows only handles a clean edge slice - a window the placement
+    // covers *entirely* falls through it (the shrink computes a zero-size remainder, which
+    // fails its own > 50 guard), leaving the window intact but completely hidden
+    // underneath. This moves it to the largest free region instead.
+    //
+    // "Free region" is defined over the grid rather than as a true maximal-empty-rectangle
+    // search: candidates are all grid-aligned rectangles, tested at their final inset
+    // geometry against every other window. That keeps the result predictable and aligned
+    // with everything else the tiler does, and the candidate count is small enough
+    // (~200 for a 6x4 grid) to brute-force once per commit.
+
+    // Largest grid-aligned rectangle on the current screen that no other window occupies,
+    // as a final (gap-inset) geometry, or null if nothing big enough is free.
+    function findFreeRegion(forWin) {
+        const cols = root.activeGridCols, rows = root.activeGridRows;
+        const cellW = root.availGeo.width / cols, cellH = root.availGeo.height / rows;
+        const inset = root.windowGap / 2;
+
+        const occupied = [];
+        const wins = Workspace.stackingOrder;
+        for (let i = 0; i < wins.length; i++) {
+            const ow = wins[i];
+            if (ow === forWin || ow.minimized || !ow.normalWindow) continue;
+            const c = ow.frameGeometry;
+            if (!root.overlapRect(c, root.availGeo)) continue;
+            occupied.push(c);
+        }
+
+        // a relocated window still has to be usable - don't shove it into a sliver
+        const minW = Math.max(200, root.linkedLimit(forWin, "min", "width", 0));
+        const minH = Math.max(150, root.linkedLimit(forWin, "min", "height", 0));
+
+        let best = null, bestArea = 0;
+        for (let c1 = 0; c1 < cols; c1++) {
+            for (let c2 = c1 + 1; c2 <= cols; c2++) {
+                for (let r1 = 0; r1 < rows; r1++) {
+                    for (let r2 = r1 + 1; r2 <= rows; r2++) {
+                        const cand = Qt.rect(
+                            root.availGeo.x + c1 * cellW + inset,
+                            root.availGeo.y + r1 * cellH + inset,
+                            (c2 - c1) * cellW - root.windowGap,
+                            (r2 - r1) * cellH - root.windowGap
+                        );
+                        if (cand.width < minW || cand.height < minH) continue;
+                        const area = cand.width * cand.height;
+                        if (area <= bestArea) continue;  // can't beat the incumbent
+                        let clear = true;
+                        for (let k = 0; k < occupied.length; k++) {
+                            if (root.overlapRect(cand, occupied[k])) { clear = false; break; }
+                        }
+                        if (!clear) continue;
+                        best = cand;
+                        bestArea = area;
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
+    function relocateCoveredWindows(target) {
+        const EPS = 24;
+        const others = Workspace.stackingOrder;
+        const covered = [];
+        for (let j = 0; j < others.length; j++) {
+            const ow = others[j];
+            if (ow === root.targetWindow || ow.minimized || !ow.normalWindow) continue;
+            const c = ow.frameGeometry;
+            const ov = root.overlapRect(c, target);
+            if (!ov) continue;
+            // fully covered on both axes - a window covered on only one is an edge slice,
+            // which resizeOverlappingWindows already shrinks properly
+            if (ov.width >= c.width - EPS && ov.height >= c.height - EPS) covered.push(ow);
+        }
+        for (let j = 0; j < covered.length; j++) {
+            // recomputed per window, so two windows covered by one placement can't both be
+            // sent to the same spot - the first one placed counts as occupied for the next
+            const spot = root.findFreeRegion(covered[j]);
+            // nothing big enough is free: leave the window where it is rather than invent
+            // a position. It stays hidden underneath, which is the old behaviour, but a
+            // guessed spot on a full screen would be worse than a predictable no-op.
+            if (!spot) continue;
+            try {
+                covered[j].setMaximize(false, false);
+                covered[j].frameGeometry = Qt.rect(Math.round(spot.x), Math.round(spot.y),
+                                                   Math.round(spot.width), Math.round(spot.height));
+            } catch (e) {
+                console.log("divvygrid: covered-window relocate failed:", e);
+            }
+        }
+    }
+
     function commit(x, y, w, h) {
         if (!targetWindow) {
             hide();
@@ -915,6 +1014,16 @@ PlasmaCore.Dialog {
             console.log("divvygrid: target window vanished during commit:", e);
             hide();
             return;
+        }
+        // relocate before shrink, so the covered-window test sees pre-shrink geometry. The
+        // two cases are disjoint (a fully covered window has no edge slice to shrink), but
+        // ordering it this way keeps that independence from being load-bearing.
+        if (relocateCovered) {
+            try {
+                relocateCoveredWindows(rect);
+            } catch (e) {
+                console.log("divvygrid: covered-window relocate threw:", e);
+            }
         }
         if (resizeOverlapping) {
             try {

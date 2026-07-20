@@ -215,6 +215,7 @@ Scripts → DivvyGrid → Configure..., or by hand with `kwriteconfig6`:
 | `compactHeight` | Int | 300 | px |
 | `gap` | Int | 8 | px inset applied to each edge of the final placed window |
 | `resizeOverlapping` | Bool | true | shrink other windows whose edge is fully covered by a new placement |
+| `relocateCovered` | Bool | true | move windows a placement *completely* covers to the largest free grid region — see "Relocating covered windows" below |
 | `compactAtCursor` | Bool | false | compact mode: spawn overlay centered on the mouse cursor |
 | `hotCorner` | Int | 0 | 0=none,1=topLeft,2=topRight,3=bottomLeft,4=bottomRight, wired to a `ScreenEdgeHandler` per corner in `main.qml`, gated by `enabled: root.hotCorner === "..."` so only one is ever active |
 | `monitorsJson` | String | `{}` | JSON map of output name → `{gridCols, gridRows}` override, e.g. `{"DP-2":{"gridCols":8,"gridRows":6}}` |
@@ -287,6 +288,39 @@ overlays, but architecturally distinct from drag-triggered activation above
   mode (`showAuto()` leaves `targetTitle`/`targetIconName` empty) — the
   target window is unambiguous (it's exactly the one being dragged), so that
   chrome would be pure noise here.
+
+## Relocating covered windows (`relocateCovered`)
+
+`resizeOverlappingWindows()` only handles a clean edge slice. A window a
+placement covers *entirely* falls through it — the shrink computes a zero-size
+remainder, which fails its own `> 50` guard — so before this the window stayed
+intact but completely hidden underneath. That was an unhandled case that
+happened to no-op, not a deliberate choice.
+`relocateCoveredWindows()` / `findFreeRegion()` move it instead.
+
+- **"Free region" is defined over the grid**, not as a true maximal-empty-
+  rectangle search: candidates are all grid-aligned rectangles, each tested at
+  its final gap-inset geometry against every other window, largest clear one
+  wins. Predictable, aligned with everything else the tiler does, and small
+  enough to brute-force per commit (~210 candidates on a 6×4 grid, ~750 on
+  8×6 — it's `O(cols²·rows²·windows)`, so a much finer grid would want a
+  rethink).
+- **No fallback placement when nothing fits.** The window is left where it is
+  (i.e. hidden, the old behaviour) rather than being given a guessed spot. On
+  a full screen a guess would be worse than a predictable no-op. This is the
+  known weak spot of the "push to free space" model — it was chosen over
+  swapping/minimizing with that tradeoff understood.
+- **Relocation runs before the shrink pass** so the covered test sees
+  pre-shrink geometry. The two cases are disjoint (a fully covered window has
+  no edge slice left to shrink), but the ordering keeps that from being
+  load-bearing.
+- **`findFreeRegion` is recomputed per window**, so two windows covered by one
+  placement can't both be sent to the same spot — the first counts as occupied
+  for the second.
+- Relocated windows are sized to fill the region, not restored at their old
+  size, matching how every other placement in the script behaves. A floor of
+  200×150 (or the window's own declared minimum, whichever is larger) keeps
+  one from being shoved into a sliver.
 
 ## Linked resize (`linkedResize`)
 
