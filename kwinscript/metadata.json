@@ -1,0 +1,21 @@
+{
+    "KPlugin": {
+        "Authors": [{ "Name": "ivan" }],
+        "Category": "Utilities",
+        "Description": "Divvy-style click-drag grid window placement",
+        "EnabledByDefault": false,
+        "Icon": "preferences-desktop-virtual",
+        "Id": "divvygrid10",
+        "License": "GPL-3.0+",
+        "Name": "DivvyGrid",
+        "ServiceTypes": ["KWin/Script"],
+        "Version": "0.2.0"
+    },
+    "X-Plasma-API": "declarativescript",
+    "X-Plasma-MainScript": "ui/main.qml",
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "KPackageStructure": "KWin/Script",
+    "X-KDE-PluginKeyword": "divvygrid10",
+    "X-KDE-ConfigModule": "kwin/effects/configs/kcm_kwin4_genericscripted",
+    "X-KDE-ParentApp": "kwin"
+}

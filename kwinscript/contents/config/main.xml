@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0
+      http://www.kde.org/standards/kcfg/1.0/kcfg.xsd" >
+    <kcfgfile name=""/>
+    <group name="">
+
+        <entry name="gridCols" type="Int">
+            <default>6</default>
+        </entry>
+
+        <entry name="gridRows" type="Int">
+            <default>4</default>
+        </entry>
+
+        <!-- Int, not String: a plain QComboBox's auto-bindable USER property is
+             currentIndex, not currentText, so a String-typed entry ends up storing the
+             index as text ("0"/"1") instead of matching by name - confirmed live, this
+             silently broke mode-switching entirely. Mapped to/from the mode name in
+             main.qml's loadConfig(). -->
+        <entry name="mode" type="Int">
+            <default>0</default>
+        </entry>
+
+        <entry name="compactWidth" type="Int">
+            <default>480</default>
+        </entry>
+
+        <entry name="compactHeight" type="Int">
+            <default>300</default>
+        </entry>
+
+        <entry name="gap" type="Int">
+            <default>8</default>
+        </entry>
+
+        <entry name="resizeOverlapping" type="Bool">
+            <default>true</default>
+        </entry>
+
+        <entry name="compactAtCursor" type="Bool">
+            <default>false</default>
+        </entry>
+
+        <!-- Int for the same reason as "mode" above - see comment there. -->
+        <entry name="hotCorner" type="Int">
+            <default>0</default>
+        </entry>
+
+        <!-- per-output grid column/row overrides, keyed by KWin output name (e.g. "DP-2"),
+             JSON-encoded since kcfg has no native map type - same pattern as kzones'
+             layoutsJson. Example: {"DP-2":{"gridCols":8,"gridRows":6}} -->
+        <entry name="monitorsJson" type="String">
+            <default>{}</default>
+        </entry>
+
+    </group>
+</kcfg>
