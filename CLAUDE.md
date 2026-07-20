@@ -188,6 +188,33 @@ app.
 - **`KWin.PlacementArea`** is the `Workspace.clientArea(...)` option that
   actually excludes panel/dock struts — use it, not the raw output geometry,
   for anything that shouldn't overlap the taskbar.
+- **`console.log` is silently swallowed** by the declarative-script host —
+  only `console.warn` / `console.error` reach the journal (confirmed live with
+  a `Component.onCompleted` probe). This is a trap when debugging: a function
+  instrumented with `console.log` looks like it never ran. Every diagnostic in
+  this file uses `console.warn` for that reason. Read with
+  `journalctl --user -b --no-pager | grep divvygrid`.
+- **The overlay itself appears in `Workspace.stackingOrder`**, and in the
+  drag-triggered path it's forced fullscreen — so any code scanning windows
+  for occupied space will see a window covering the entire screen unless it
+  filters itself out. This silently disabled `relocateCovered`'s free-region
+  search completely (every candidate measured 100% occupied, on every screen,
+  in every layout) and cost several debugging rounds, because the symptom
+  looked like a too-strict threshold rather than bad input. `normalWindow` is
+  **not** enough to exclude it: the overlay reports `normalWindow: true`,
+  every type flag (`desktopWindow`, `dock`, `skipTaskbar`, `skipSwitcher`,
+  `utility`, `popupWindow`) false, and empty `caption`. What distinguishes it
+  is an **empty `resourceClass`** — script-owned windows have none, every real
+  application window has one. `isRealWindow()` is the single shared predicate
+  for this; use it rather than open-coding window filters, since the
+  occupancy scan and the covered-window scan having divergent filters is what
+  let the gap open in the first place.
+- **Don't measure occupancy by summing overlap areas** — overlapping windows
+  double-count the shared pixels, so a region can measure as 138% occupied
+  (seen live) and any percentage threshold compared against that number is
+  meaningless. `buildCellOccupancy()` decides occupancy per grid cell instead
+  (a cell is taken when a *single* window covers ≥35% of it), which needs no
+  union-area math and matches how the rest of the tiler reasons about space.
 - **Testing drags synthetically**: `ydotool mousemove --absolute` is
   miscalibrated on this system (events cluster near origin regardless of
   target). Use relative `ydotool mousemove -x -y` instead. That said, prefer
@@ -299,17 +326,34 @@ happened to no-op, not a deliberate choice.
 `relocateCoveredWindows()` / `findFreeRegion()` move it instead.
 
 - **"Free region" is defined over the grid**, not as a true maximal-empty-
-  rectangle search: candidates are all grid-aligned rectangles, each tested at
-  its final gap-inset geometry against every other window, largest clear one
-  wins. Predictable, aligned with everything else the tiler does, and small
-  enough to brute-force per commit (~210 candidates on a 6×4 grid, ~750 on
-  8×6 — it's `O(cols²·rows²·windows)`, so a much finer grid would want a
-  rethink).
-- **No fallback placement when nothing fits.** The window is left where it is
-  (i.e. hidden, the old behaviour) rather than being given a guessed spot. On
-  a full screen a guess would be worse than a predictable no-op. This is the
-  known weak spot of the "push to free space" model — it was chosen over
-  swapping/minimizing with that tradeoff understood.
+  rectangle search: candidates are all grid-aligned rectangles, the largest one
+  whose every cell is free wins. Predictable, aligned with everything else the
+  tiler does, and small enough to brute-force per commit (~210 candidates on a
+  6×4 grid, ~750 on 8×6).
+- **Occupancy is per grid cell, not per candidate rectangle**
+  (`buildCellOccupancy()`, built once per relocate and shared by every
+  candidate). Two earlier area-based versions both failed live and are worth
+  not re-deriving: testing a candidate rectangle against raw window rects and
+  requiring it to be *entirely* untouched finds nothing on a real desktop,
+  because one floating window straddling a cell boundary clips every candidate
+  near it; relaxing that to "≤15% of the candidate's area may be occupied"
+  then broke on the fact that summing per-window overlap areas double-counts
+  overlapping windows, measuring regions as up to 138% occupied. Deciding each
+  cell independently sidesteps both, and lets the qualifying rule go back to a
+  strict all-cells-free test with no tolerance constant to tune.
+- **The whole search was dead for several rounds** because the overlay counted
+  itself as an occupier covering the entire screen — see the `resourceClass`
+  gotcha above. Symptom to recognise: a "best occupancy ratio" that is
+  *exactly* 1.000 on every attempt regardless of layout is bad input, not a
+  threshold that needs adjusting.
+- **Fallback when nothing fits: swap into the slot the placed window vacated**,
+  snapped to the grid (`snapRectToGrid()`) so the result looks placed rather
+  than inheriting an arbitrary floating rectangle; the raw vacated rect is
+  used only if the snapped version isn't clear. Claimed by the first covered
+  window that can use it — a second one falls back to the region search. If
+  that fails too the window is left where it is (i.e. hidden, the old
+  behaviour) rather than being given a guessed spot; on a full screen a guess
+  is worse than a predictable no-op.
 - **Relocation runs before the shrink pass** so the covered test sees
   pre-shrink geometry. The two cases are disjoint (a fully covered window has
   no edge slice left to shrink), but the ordering keeps that from being
@@ -317,6 +361,11 @@ happened to no-op, not a deliberate choice.
 - **`findFreeRegion` is recomputed per window**, so two windows covered by one
   placement can't both be sent to the same spot — the first counts as occupied
   for the second.
+- **Window filtering goes through the shared `isRealWindow()` predicate**, used
+  by both `occupiedRects()` and the covered-window scan. They previously had
+  divergent open-coded filters, which is exactly how the overlay ended up
+  counted as an occupier while being correctly excluded as a relocation
+  candidate.
 - Relocated windows are sized to fill the region, not restored at their old
   size, matching how every other placement in the script behaves. A floor of
   200×150 (or the window's own declared minimum, whichever is larger) keeps

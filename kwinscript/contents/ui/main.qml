@@ -100,7 +100,7 @@ PlasmaCore.Dialog {
             // would silently mis-route too - guard for both.
             monitorOverrides = (parsed && typeof parsed === "object" && !Array.isArray(parsed)) ? parsed : {};
         } catch (e) {
-            console.log("divvygrid: invalid monitorsJson, using defaults:", e);
+            console.warn("divvygrid: invalid monitorsJson, using defaults:", e);
             monitorOverrides = {};
         }
     }
@@ -916,30 +916,143 @@ PlasmaCore.Dialog {
 
     // Largest grid-aligned rectangle on the current screen that no other window occupies,
     // as a final (gap-inset) geometry, or null if nothing big enough is free.
-    function findFreeRegion(forWin) {
-        const cols = root.activeGridCols, rows = root.activeGridRows;
-        const cellW = root.availGeo.width / cols, cellH = root.availGeo.height / rows;
-        const inset = root.windowGap / 2;
+    // every window that counts as occupying space on the current screen, `exceptWin` aside
+    // Is this something the user thinks of as a window - i.e. something that both counts as
+    // occupying space and is worth relocating? `normalWindow` alone is not enough: confirmed
+    // live, plasmashell's desktop/wallpaper window passes it and reports the full screen
+    // rect (0,681 3440x1440), which made every candidate region look 100% occupied and
+    // silently disabled free-region search entirely. Helper windows kept out of the taskbar
+    // (xwaylandvideobridge) are excluded for the same reason. Read defensively - an
+    // undefined property must not end up skipping everything.
+    function isRealWindow(w) {
+        if (!w || w.minimized || !w.normalWindow) return false;
+        if (w.skipTaskbar === true || w.skipSwitcher === true) return false;
+        if (w.desktopWindow === true || w.dock === true) return false;
+        // our own overlay is in the stacking order too, and in the drag-triggered path it is
+        // forced fullscreen - so without this it reports the whole screen as occupied at
+        // exactly the moment commit() asks where the free space is, pinning every candidate
+        // region at 100% occupied and silently disabling free-region search altogether
+        // (confirmed live: class and caption both empty, every type flag false, geometry
+        // exactly the output rect). Script-owned windows carry no resourceClass; every real
+        // application window does.
+        if (!w.resourceClass || String(w.resourceClass) === "") return false;
+        return true;
+    }
 
+    function occupiedRects(exceptWin) {
         const occupied = [];
         const wins = Workspace.stackingOrder;
         for (let i = 0; i < wins.length; i++) {
             const ow = wins[i];
-            if (ow === forWin || ow.minimized || !ow.normalWindow) continue;
+            if (ow === exceptWin || !root.isRealWindow(ow)) continue;
             const c = ow.frameGeometry;
             if (!root.overlapRect(c, root.availGeo)) continue;
             occupied.push(c);
         }
+        return occupied;
+    }
+
+    // The grid-aligned rectangle nearest to an arbitrary one, as a final (gap-inset)
+    // geometry. Rounds to the closest cell boundary rather than enclosing outward: this
+    // tidies a floating window's geometry into the grid, and growing it to enclose would
+    // just make it more likely to collide with whatever is next to it.
+    function snapRectToGrid(r) {
+        const cols = root.activeGridCols, rows = root.activeGridRows;
+        const cellW = root.availGeo.width / cols, cellH = root.availGeo.height / rows;
+        const inset = root.windowGap / 2;
+        let c1 = Math.round((r.x - root.availGeo.x) / cellW);
+        let c2 = Math.round((r.x + r.width - root.availGeo.x) / cellW);
+        let r1 = Math.round((r.y - root.availGeo.y) / cellH);
+        let r2 = Math.round((r.y + r.height - root.availGeo.y) / cellH);
+        c1 = root.clamp(c1, 0, cols - 1);
+        r1 = root.clamp(r1, 0, rows - 1);
+        c2 = root.clamp(c2, c1 + 1, cols);
+        r2 = root.clamp(r2, r1 + 1, rows);
+        return Qt.rect(
+            root.availGeo.x + c1 * cellW + inset,
+            root.availGeo.y + r1 * cellH + inset,
+            (c2 - c1) * cellW - root.windowGap,
+            (r2 - r1) * cellH - root.windowGap
+        );
+    }
+
+    // Which grid cells are already spoken for. Occupancy is decided per cell rather than by
+    // summing overlap areas across a candidate: summing double-counts windows that overlap
+    // each other, so a region could measure as 138% occupied (seen live) and no percentage
+    // threshold over that number means anything. A cell counts as taken when a *single*
+    // window covers at least CELL_FILL of it, which needs no union-area math and matches how
+    // the rest of the tiler reasons about space.
+    // Returns a cols*rows array of booleans, indexed c * rows + r.
+    function buildCellOccupancy(exceptWin) {
+        const cols = root.activeGridCols, rows = root.activeGridRows;
+        const cellW = root.availGeo.width / cols, cellH = root.availGeo.height / rows;
+        const CELL_FILL = 0.35;
+        const occ = root.occupiedRects(exceptWin);
+        const taken = new Array(cols * rows);
+        for (let c = 0; c < cols; c++) {
+            for (let r = 0; r < rows; r++) {
+                const cell = Qt.rect(root.availGeo.x + c * cellW, root.availGeo.y + r * cellH,
+                                     cellW, cellH);
+                const limit = cellW * cellH * CELL_FILL;
+                let hit = false;
+                for (let k = 0; k < occ.length && !hit; k++) {
+                    const o = root.overlapRect(cell, occ[k]);
+                    if (o && o.width * o.height >= limit) hit = true;
+                }
+                taken[c * rows + r] = hit;
+            }
+        }
+        return taken;
+    }
+
+    // Best grid-aligned region to move a covered window into, as a final (gap-inset)
+    // geometry, or null if nothing is good enough.
+    //
+    // Are all the cells an arbitrary rectangle covers free? Membership is by cell centre, so
+    // the gap inset on an already-snapped rect doesn't matter.
+    function regionFree(r, taken) {
+        const cols = root.activeGridCols, rows = root.activeGridRows;
+        const cellW = root.availGeo.width / cols, cellH = root.availGeo.height / rows;
+        for (let c = 0; c < cols; c++) {
+            for (let rr = 0; rr < rows; rr++) {
+                const cx = root.availGeo.x + (c + 0.5) * cellW;
+                const cy = root.availGeo.y + (rr + 0.5) * cellH;
+                if (cx < r.x || cx > r.x + r.width || cy < r.y || cy > r.y + r.height) continue;
+                if (taken[c * rows + rr]) return false;
+            }
+        }
+        return true;
+    }
+
+    // A candidate qualifies only when every cell it spans is free. That is workable now that
+    // occupancy is per-cell: an earlier version tested the candidate rectangle against raw
+    // window rects and required it to be entirely untouched, which found nothing on a real
+    // desktop because a floating window straddling a boundary clips every candidate near it.
+    // The placement itself counts as an occupier, so the window can never be sent back
+    // underneath it - the one outcome that would defeat the point.
+    function findFreeRegion(forWin, placed) {
+        const cols = root.activeGridCols, rows = root.activeGridRows;
+        const cellW = root.availGeo.width / cols, cellH = root.availGeo.height / rows;
+        const inset = root.windowGap / 2;
 
         // a relocated window still has to be usable - don't shove it into a sliver
         const minW = Math.max(200, root.linkedLimit(forWin, "min", "width", 0));
         const minH = Math.max(150, root.linkedLimit(forWin, "min", "height", 0));
 
-        let best = null, bestArea = 0;
+        const taken = root.buildCellOccupancy(forWin);
+
+        let best = null, bestScore = 0;
         for (let c1 = 0; c1 < cols; c1++) {
             for (let c2 = c1 + 1; c2 <= cols; c2++) {
                 for (let r1 = 0; r1 < rows; r1++) {
                     for (let r2 = r1 + 1; r2 <= rows; r2++) {
+                        let free = true;
+                        for (let c = c1; c < c2 && free; c++) {
+                            for (let r = r1; r < r2 && free; r++) {
+                                if (taken[c * rows + r]) free = false;
+                            }
+                        }
+                        if (!free) continue;
                         const cand = Qt.rect(
                             root.availGeo.x + c1 * cellW + inset,
                             root.availGeo.y + r1 * cellH + inset,
@@ -947,15 +1060,11 @@ PlasmaCore.Dialog {
                             (r2 - r1) * cellH - root.windowGap
                         );
                         if (cand.width < minW || cand.height < minH) continue;
-                        const area = cand.width * cand.height;
-                        if (area <= bestArea) continue;  // can't beat the incumbent
-                        let clear = true;
-                        for (let k = 0; k < occupied.length; k++) {
-                            if (root.overlapRect(cand, occupied[k])) { clear = false; break; }
-                        }
-                        if (!clear) continue;
+                        if (placed && root.overlapRect(cand, placed)) continue;
+                        const score = cand.width * cand.height;  // biggest free region wins
+                        if (score <= bestScore) continue;
                         best = cand;
-                        bestArea = area;
+                        bestScore = score;
                     }
                 }
             }
@@ -963,13 +1072,13 @@ PlasmaCore.Dialog {
         return best;
     }
 
-    function relocateCoveredWindows(target) {
+    function relocateCoveredWindows(target, vacated) {
         const EPS = 24;
         const others = Workspace.stackingOrder;
         const covered = [];
         for (let j = 0; j < others.length; j++) {
             const ow = others[j];
-            if (ow === root.targetWindow || ow.minimized || !ow.normalWindow) continue;
+            if (ow === root.targetWindow || !root.isRealWindow(ow)) continue;
             const c = ow.frameGeometry;
             const ov = root.overlapRect(c, target);
             if (!ov) continue;
@@ -977,20 +1086,41 @@ PlasmaCore.Dialog {
             // which resizeOverlappingWindows already shrinks properly
             if (ov.width >= c.width - EPS && ov.height >= c.height - EPS) covered.push(ow);
         }
+
+        // The spot the placed window just left is the one region guaranteed to be free,
+        // and on a tiled screen it's usually the ONLY one - free-region search comes up
+        // empty precisely when this feature is most wanted (confirmed live: every covered
+        // window logged "spot NONE" on a tiled screen). Claimed by the first covered
+        // window that can use it; a second one has to fall back to the region search.
+        let swapAvailable = vacated && vacated.width >= 200 && vacated.height >= 150
+            && !root.overlapRect(vacated, target);
         for (let j = 0; j < covered.length; j++) {
             // recomputed per window, so two windows covered by one placement can't both be
             // sent to the same spot - the first one placed counts as occupied for the next
-            const spot = root.findFreeRegion(covered[j]);
-            // nothing big enough is free: leave the window where it is rather than invent
-            // a position. It stays hidden underneath, which is the old behaviour, but a
-            // guessed spot on a full screen would be worse than a predictable no-op.
+            let spot = root.findFreeRegion(covered[j], target);
+            if (!spot && swapAvailable) {
+                // The vacated slot is whatever geometry the placed window happened to have,
+                // which for a floating window is an arbitrary rectangle - dropping the
+                // covered window straight into it just moves the untidiness around. Snap it
+                // to the grid so the result looks placed rather than inherited, and keep the
+                // raw rect only if the snapped version would collide with something (the
+                // grid region around a floating window is not necessarily free).
+                const snapped = root.snapRectToGrid(vacated);
+                const usable = !root.overlapRect(snapped, target)
+                    && root.regionFree(snapped, root.buildCellOccupancy(covered[j]));
+                spot = usable ? snapped : vacated;
+                swapAvailable = false;  // one window per vacated slot
+            }
+            // nothing free and nothing vacated: leave the window where it is rather than
+            // invent a position. It stays hidden underneath, which is the old behaviour,
+            // but a guessed spot on a full screen would be worse than a predictable no-op.
             if (!spot) continue;
             try {
                 covered[j].setMaximize(false, false);
                 covered[j].frameGeometry = Qt.rect(Math.round(spot.x), Math.round(spot.y),
                                                    Math.round(spot.width), Math.round(spot.height));
             } catch (e) {
-                console.log("divvygrid: covered-window relocate failed:", e);
+                console.warn("divvygrid: covered-window relocate failed:", e);
             }
         }
     }
@@ -1006,12 +1136,19 @@ PlasmaCore.Dialog {
         const gw = Math.max(50, w - windowGap);
         const gh = Math.max(50, h - windowGap);
         const rect = Qt.rect(Math.round(gx), Math.round(gy), Math.round(gw), Math.round(gh));
+        // snapshot before the write - this is the slot the placement frees up, and it's
+        // what a covered window falls back to when no free region exists (see
+        // relocateCoveredWindows). Only meaningful if the window was on this screen to
+        // begin with; a target dragged in from another monitor vacates nothing here.
+        const pg = targetWindow.frameGeometry;
+        const vacated = root.overlapRect(pg, root.availGeo)
+            ? Qt.rect(pg.x, pg.y, pg.width, pg.height) : null;
         targetWindow.setMaximize(false, false);
         try {
             targetWindow.frameGeometry = rect;
         } catch (e) {
             // can throw if the window is being destroyed between the read and the write
-            console.log("divvygrid: target window vanished during commit:", e);
+            console.warn("divvygrid: target window vanished during commit:", e);
             hide();
             return;
         }
@@ -1020,9 +1157,9 @@ PlasmaCore.Dialog {
         // ordering it this way keeps that independence from being load-bearing.
         if (relocateCovered) {
             try {
-                relocateCoveredWindows(rect);
+                relocateCoveredWindows(rect, vacated);
             } catch (e) {
-                console.log("divvygrid: covered-window relocate threw:", e);
+                console.warn("divvygrid: covered-window relocate threw:", e);
             }
         }
         if (resizeOverlapping) {
@@ -1030,7 +1167,7 @@ PlasmaCore.Dialog {
                 resizeOverlappingWindows(rect);
             } catch (e) {
                 // a sibling window we tried to make-room for was likely destroyed mid-loop
-                console.log("divvygrid: overlap-resize threw:", e);
+                console.warn("divvygrid: overlap-resize threw:", e);
             }
         }
         hide();
