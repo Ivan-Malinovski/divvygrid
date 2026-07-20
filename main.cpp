@@ -17,9 +17,15 @@
 #include <QTimer>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonArray>
+#include <QVariant>
 #include <QAction>
 #include <QKeySequence>
 #include <QHash>
+#include <QSet>
+#include <QQuickImageProvider>
+#include <QIcon>
+#include <QPixmap>
 #include <KGlobalAccel>
 
 namespace {
@@ -34,6 +40,13 @@ bool gResizeOverlapping = true;
 // reported by the injected KWin script - QScreen::availableGeometry() does not reflect
 // panel-reserved space on this KWin/Wayland setup, so it can't be used for this
 QRect gWorkArea;
+// caption/icon-theme-name of the window about to be resized, reported by queryWindowInfo -
+// shown in the compact overlay's title bar so the user knows what they're about to resize
+QString gTargetTitle;
+QString gTargetIconName;
+// {id, title, icon} for every normal window on the overlay's screen, reported by
+// queryWindowList - backs the compact title bar's click-to-switch-target picker
+QVariantList gWindowList;
 
 // state tracked by the persistent drag-watching KWin script (see loadPersistentScript
 // below) - which window, if any, is currently being interactively moved by the user,
@@ -63,6 +76,9 @@ struct Config {
     // screen for a plain hotkey activation too (already true unconditionally for a
     // drag-triggered activation - see Controller::spawnAtCursor)
     bool compactAtCursor = false;
+    // mouse-only activation: pushing the cursor into this screen corner also opens the
+    // overlay, same as the keyboard shortcut. "none"/"topLeft"/"topRight"/"bottomLeft"/"bottomRight"
+    QString hotCorner = QStringLiteral("none");
     QHash<QString, MonitorOverride> monitors; // keyed by QScreen::name()
 };
 
@@ -82,6 +98,7 @@ void writeDefaultConfig(const Config &c) {
     obj["shortcut"] = c.shortcut;
     obj["resizeOverlapping"] = c.resizeOverlapping;
     obj["compactAtCursor"] = c.compactAtCursor;
+    obj["hotCorner"] = c.hotCorner;
     QJsonObject monitors;
     for (auto it = c.monitors.constBegin(); it != c.monitors.constEnd(); ++it) {
         QJsonObject m;
@@ -118,6 +135,7 @@ Config loadConfig() {
     if (obj.contains("shortcut")) c.shortcut = obj["shortcut"].toString(c.shortcut);
     if (obj.contains("resizeOverlapping")) c.resizeOverlapping = obj["resizeOverlapping"].toBool(c.resizeOverlapping);
     if (obj.contains("compactAtCursor")) c.compactAtCursor = obj["compactAtCursor"].toBool(c.compactAtCursor);
+    if (obj.contains("hotCorner")) c.hotCorner = obj["hotCorner"].toString(c.hotCorner);
     if (obj.contains("monitors") && obj["monitors"].isObject()) {
         const QJsonObject monitors = obj["monitors"].toObject();
         for (auto it = monitors.constBegin(); it != monitors.constEnd(); ++it) {
@@ -136,6 +154,8 @@ Config loadConfig() {
     if (c.compactHeight < 60) c.compactHeight = 60;
     if (c.gap < 0) c.gap = 0;
     if (QKeySequence(c.shortcut).isEmpty()) c.shortcut = QStringLiteral("Meta+Alt+D");
+    static const QSet<QString> validCorners = {"none", "topLeft", "topRight", "bottomLeft", "bottomRight"};
+    if (!validCorners.contains(c.hotCorner)) c.hotCorner = QStringLiteral("none");
     return c;
 }
 
@@ -175,6 +195,24 @@ void loadPersistentScript(const QString &scriptPath, const QString &pluginName) 
 }
 
 } // namespace
+
+// resolves a window's resourceClass (roughly its app id / WM_CLASS, e.g. "org.kde.konsole")
+// to a themed icon for the compact overlay's title bar - QML has no built-in "look up an
+// XDG icon theme entry by name" provider, so this wraps QIcon::fromTheme for it, exposed
+// as image://wicon/<name>.
+class WindowIconProvider : public QQuickImageProvider {
+public:
+    WindowIconProvider() : QQuickImageProvider(QQuickImageProvider::Pixmap) {}
+
+    QPixmap requestPixmap(const QString &id, QSize *size, const QSize &requestedSize) override {
+        const int dim = requestedSize.width() > 0 ? requestedSize.width() : 48;
+        QIcon icon = QIcon::fromTheme(id);
+        if (icon.isNull()) icon = QIcon::fromTheme(QStringLiteral("application-x-executable"));
+        const QPixmap pm = icon.pixmap(dim, dim);
+        if (size) *size = pm.size();
+        return pm;
+    }
+};
 
 // Receives a callback from an injected KWin script via callDBus(), since plain
 // (non-declarative) KWin scripts have no working config/file API to report data back.
@@ -223,11 +261,42 @@ public Q_SLOTS:
         }
     }
 
+    // called by the persistent hot-corner-watching script (see startHotCornerWatcher)
+    // whenever the cursor pushes into the configured screen corner
+    void hotCornerActivated() {
+        Q_EMIT hotCornerTriggered();
+    }
+
+    // reports the caption/resourceClass of the window queryWindowInfo was asked about
+    void reportWindowInfo(const QString &title, const QString &iconName) {
+        gTargetTitle = title;
+        gTargetIconName = iconName;
+        Q_EMIT windowInfoReceived();
+    }
+
+    // reports the JSON-encoded [{id,title,icon}, ...] list built by queryWindowList
+    void reportWindowList(const QString &json) {
+        QJsonParseError err;
+        const QJsonDocument doc = QJsonDocument::fromJson(json.toUtf8(), &err);
+        QVariantList list;
+        if (err.error == QJsonParseError::NoError && doc.isArray()) {
+            const QJsonArray arr = doc.array();
+            for (const QJsonValue &v : arr) {
+                if (v.isObject()) list.append(v.toObject().toVariantMap());
+            }
+        }
+        gWindowList = list;
+        Q_EMIT windowListReceived();
+    }
+
 Q_SIGNALS:
     void received();
     void workAreaReceived();
     void dragStepped();
     void dragFinished();
+    void hotCornerTriggered();
+    void windowInfoReceived();
+    void windowListReceived();
 };
 
 namespace {
@@ -279,6 +348,76 @@ void queryWorkArea(AppService &service, int x, int y) {
     loop.exec();
 }
 
+// fetches the caption (title text) and resourceClass (app id, used to resolve a themed
+// icon - see WindowIconProvider) of the window with the given internalId, for display in
+// the compact overlay's title bar.
+void queryWindowInfo(AppService &service, const QString &internalId) {
+    const QString pluginName = "divvygrid-wininfo";
+    const QString script = QStringLiteral(
+        "var wins = workspace.windowList();\n"
+        "var title = '', icon = '';\n"
+        "for (var i = 0; i < wins.length; i++) {\n"
+        "    if (wins[i].internalId.toString() === '%1') {\n"
+        "        title = wins[i].caption || '';\n"
+        "        icon = wins[i].resourceClass ? wins[i].resourceClass.toString() : '';\n"
+        "        break;\n"
+        "    }\n"
+        "}\n"
+        "callDBus('org.divvygrid.App', '/App', 'org.divvygrid.App', 'reportWindowInfo', title, icon);\n"
+    ).arg(internalId);
+    const QString path = writeTempScript("divvygrid-wininfo.js", script);
+
+    QEventLoop loop;
+    QObject::connect(&service, &AppService::windowInfoReceived, &loop, &QEventLoop::quit);
+    QTimer::singleShot(1000, &loop, &QEventLoop::quit);
+
+    loadRunUnload(path, pluginName);
+    loop.exec();
+}
+
+// fetches {id, title, icon, screen} for every normal, non-minimized window across all
+// monitors - backs the compact title bar's window-switch picker. Windows on the output
+// containing (x, y) (the overlay's own screen) are sorted first, so the picker can group
+// them under a "This Display" header before the rest.
+void queryWindowList(AppService &service, int x, int y) {
+    const QString pluginName = "divvygrid-winlist";
+    const QString script = QStringLiteral(
+        "var screens = workspace.screens;\n"
+        "var target = workspace.activeScreen;\n"
+        "for (var i = 0; i < screens.length; i++) {\n"
+        "    var g = screens[i].geometry;\n"
+        "    if (%1 >= g.x && %1 < g.x + g.width && %2 >= g.y && %2 < g.y + g.height) {\n"
+        "        target = screens[i];\n"
+        "        break;\n"
+        "    }\n"
+        "}\n"
+        "var targetName = target.name;\n"
+        "var wins = workspace.windowList();\n"
+        "var result = [];\n"
+        "for (var j = 0; j < wins.length; j++) {\n"
+        "    var w = wins[j];\n"
+        "    if (!w.normalWindow || w.minimized) continue;\n"
+        "    result.push({ id: w.internalId.toString(), title: w.caption || '', icon: w.resourceClass ? w.resourceClass.toString() : '', screen: w.output ? w.output.name : '' });\n"
+        "}\n"
+        "result.sort(function (a, b) {\n"
+        "    var aCur = a.screen === targetName ? 0 : 1;\n"
+        "    var bCur = b.screen === targetName ? 0 : 1;\n"
+        "    if (aCur !== bCur) return aCur - bCur;\n"
+        "    if (a.screen !== b.screen) return a.screen < b.screen ? -1 : 1;\n"
+        "    return a.title < b.title ? -1 : (a.title > b.title ? 1 : 0);\n"
+        "});\n"
+        "callDBus('org.divvygrid.App', '/App', 'org.divvygrid.App', 'reportWindowList', JSON.stringify(result));\n"
+    ).arg(x).arg(y);
+    const QString path = writeTempScript("divvygrid-winlist.js", script);
+
+    QEventLoop loop;
+    QObject::connect(&service, &AppService::windowListReceived, &loop, &QEventLoop::quit);
+    QTimer::singleShot(1000, &loop, &QEventLoop::quit);
+
+    loadRunUnload(path, pluginName);
+    loop.exec();
+}
+
 // installs a persistent (never-unloaded) KWin script that hooks every window's
 // interactiveMoveResizeStarted/Stepped/Finished signals and reports each one back via
 // AppService::dragTick. Must be loaded once at daemon startup - see main().
@@ -314,6 +453,24 @@ void startDragWatcher() {
         "    }\n"
         "});\n";
     const QString path = writeTempScript("divvygrid-dragwatch.js", script);
+    loadPersistentScript(path, pluginName);
+}
+
+// installs a persistent KWin script that registers the configured screen corner as a KWin
+// "electric border" (the same mechanism behind e.g. the built-in minimizeall script) and
+// calls back into AppService::hotCornerActivated whenever the cursor is pushed into it -
+// a pure mouse activation path, no keyboard involved. corner must already be validated
+// (see loadConfig) to one of the four KWin.Electric*Corner names below.
+void startHotCornerWatcher(const QString &corner) {
+    const QString pluginName = "divvygrid-hotcorner";
+    const QString script = QStringLiteral(
+        "var edge = { topLeft: KWin.ElectricTopLeft, topRight: KWin.ElectricTopRight,\n"
+        "    bottomLeft: KWin.ElectricBottomLeft, bottomRight: KWin.ElectricBottomRight }['%1'];\n"
+        "registerScreenEdge(edge, function () {\n"
+        "    callDBus('org.divvygrid.App', '/App', 'org.divvygrid.App', 'hotCornerActivated');\n"
+        "});\n"
+    ).arg(corner);
+    const QString path = writeTempScript("divvygrid-hotcorner.js", script);
     loadPersistentScript(path, pluginName);
 }
 
@@ -430,10 +587,18 @@ public:
         Q_EMIT dismissed();
     }
 
+    // called from the compact overlay's window-switch picker when the user picks a
+    // different window than the one originally captured - retargets which window
+    // commit()/applyResize will actually move
+    Q_INVOKABLE void selectWindow(const QString &id, const QString &title, const QString &iconName) {
+        Q_EMIT windowSelected(id, title, iconName);
+    }
+
 Q_SIGNALS:
     void dismissed();
     void externalCursorChanged();
     void spawnAtCursorChanged();
+    void windowSelected(const QString &id, const QString &title, const QString &iconName);
     // fires once, right when C++ decides to show the overlay for a drag-triggered
     // activation - equivalent to a MouseArea onPressed, but driven externally
     void externalDragStarted();
@@ -477,6 +642,11 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("availY", 0);
     engine.rootContext()->setContextProperty("availWidth", 1920);
     engine.rootContext()->setContextProperty("availHeight", 1080);
+    engine.rootContext()->setContextProperty("targetTitle", QString());
+    engine.rootContext()->setContextProperty("targetIconName", QString());
+    engine.rootContext()->setContextProperty("windowList", QVariantList());
+    engine.rootContext()->setContextProperty("currentScreenName", QString());
+    engine.addImageProvider(QStringLiteral("wicon"), new WindowIconProvider());
 
     const QString qmlPath = QDir::homePath() + "/.local/share/divvygrid/main.qml";
     QQmlComponent component(&engine, QUrl::fromLocalFile(qmlPath));
@@ -517,6 +687,20 @@ int main(int argc, char *argv[]) {
             captureActiveWindow(appService);
         }
 
+        gTargetTitle.clear();
+        gTargetIconName.clear();
+        if (!gActiveInternalId.isEmpty()) queryWindowInfo(appService, gActiveInternalId);
+        engine.rootContext()->setContextProperty("targetTitle", gTargetTitle);
+        engine.rootContext()->setContextProperty("targetIconName", gTargetIconName);
+
+        // the window-switch picker is compact-mode-only UI - skip the extra KWin-script
+        // round trip in fullscreen mode where it's never shown
+        if (cfg.mode == QLatin1String("compact")) {
+            gWindowList.clear();
+            queryWindowList(appService, gCursorPos.x(), gCursorPos.y());
+        }
+        engine.rootContext()->setContextProperty("windowList", gWindowList);
+
         QScreen *screen = QGuiApplication::screenAt(gCursorPos);
         if (!screen) screen = QGuiApplication::primaryScreen();
         const QRect geo = screen->geometry();
@@ -527,6 +711,7 @@ int main(int argc, char *argv[]) {
         queryWorkArea(appService, gCursorPos.x(), gCursorPos.y());
         const QRect avail = gWorkArea.isValid() ? gWorkArea : geo;
 
+        engine.rootContext()->setContextProperty("currentScreenName", screen->name());
         engine.rootContext()->setContextProperty("screenX", geo.x());
         engine.rootContext()->setContextProperty("screenY", geo.y());
         engine.rootContext()->setContextProperty("targetScreenWidth", geo.width());
@@ -611,7 +796,22 @@ int main(int argc, char *argv[]) {
         dragTriggeredActive = false;
     });
 
+    // window-switch picker: retarget which window the eventual commit()/applyResize
+    // will move, and refresh the title bar to reflect the new selection
+    QObject::connect(&controller, &Controller::windowSelected,
+        [&](const QString &id, const QString &title, const QString &iconName) {
+            gActiveInternalId = id;
+            gTargetTitle = title;
+            gTargetIconName = iconName;
+            engine.rootContext()->setContextProperty("targetTitle", gTargetTitle);
+            engine.rootContext()->setContextProperty("targetIconName", gTargetIconName);
+        });
+
     startDragWatcher();
+    if (cfg.hotCorner != QLatin1String("none")) {
+        startHotCornerWatcher(cfg.hotCorner);
+        QObject::connect(&appService, &AppService::hotCornerTriggered, toggleOverlay);
+    }
 
     const QKeySequence shortcut(cfg.shortcut);
     auto *action = new QAction(&app);

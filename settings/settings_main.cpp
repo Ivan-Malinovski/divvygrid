@@ -160,6 +160,18 @@ public:
         m_resizeOverlapping->setChecked(true);
         generalForm->addRow("", m_resizeOverlapping);
 
+        m_hotCorner = new QComboBox();
+        m_hotCorner->addItem("None (keyboard shortcut only)", "none");
+        m_hotCorner->addItem("Top-left", "topLeft");
+        m_hotCorner->addItem("Top-right", "topRight");
+        m_hotCorner->addItem("Bottom-left", "bottomLeft");
+        m_hotCorner->addItem("Bottom-right", "bottomRight");
+        generalForm->addRow("Mouse hot corner:", m_hotCorner);
+        auto *hotCornerHint = new QLabel("Push the cursor into this screen corner to open the overlay - no keyboard needed.");
+        hotCornerHint->setStyleSheet("color: gray; font-size: 11px;");
+        hotCornerHint->setWordWrap(true);
+        generalForm->addRow("", hotCornerHint);
+
         outer->addWidget(generalBox);
 
         // --- Per-monitor overrides ---
@@ -209,6 +221,7 @@ private:
     QSpinBox *m_gridRows;
     QCheckBox *m_autostart;
     QCheckBox *m_resizeOverlapping;
+    QComboBox *m_hotCorner;
     QLabel *m_status;
     QVector<MonitorRow> m_monitorRows;
 
@@ -290,6 +303,10 @@ private:
         m_gridRows->setValue(obj.value("gridRows").toInt(4));
         m_resizeOverlapping->setChecked(obj.value("resizeOverlapping").toBool(true));
 
+        const QString hotCorner = obj.value("hotCorner").toString("none");
+        const int hotCornerIdx = m_hotCorner->findData(hotCorner);
+        m_hotCorner->setCurrentIndex(hotCornerIdx >= 0 ? hotCornerIdx : 0);
+
         const QString shortcutStr = obj.value("shortcut").toString("Meta+Alt+D");
         QKeySequence seq(shortcutStr);
         m_shortcut->setKeySequence(seq.isEmpty() ? QKeySequence("Meta+Alt+D") : seq);
@@ -323,6 +340,7 @@ private:
         obj["gridCols"] = m_gridCols->value();
         obj["gridRows"] = m_gridRows->value();
         obj["resizeOverlapping"] = m_resizeOverlapping->isChecked();
+        obj["hotCorner"] = m_hotCorner->currentData().toString();
 
         QJsonObject monitors;
         for (const MonitorRow &row : m_monitorRows) {
