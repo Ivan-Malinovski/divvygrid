@@ -21,7 +21,7 @@ script API (`X-Plasma-API: declarativescript`), which exposes a full
 one-shot scripts, no separate daemon process.
 
 - **`kwinscript/metadata.json`** — KPackage metadata. `KPlugin.Id` /
-  `X-KDE-PluginKeyword` (currently `"divvygrid13"`, see "Plugin ID" below) is
+  `X-KDE-PluginKeyword` (currently `"divvygrid14"`, see "Plugin ID" below) is
   both the kwinrc config-group key (`[Script-<id>]`) and the cache key for
   KWin's in-process compiled-QML cache.
 - **`kwinscript/contents/ui/main.qml`** — the entire overlay: grid, drag/snap,
@@ -40,7 +40,7 @@ one-shot scripts, no separate daemon process.
   `KGlobalAccel` + `QAction`; the shortcut stays user-rebindable from System
   Settings → Shortcuts, same as before.
 - **`kwinscript/contents/config/main.xml`** — kcfg schema for every config
-  entry, auto-bound into `~/.config/kwinrc` under `[Script-divvygrid13]`.
+  entry, auto-bound into `~/.config/kwinrc` under `[Script-divvygrid14]`.
 - **`kwinscript/contents/ui/config.ui`** — the Qt Widgets settings form (Qt
   Designer XML), auto-bound to kcfg entries via `kcfg_<entryName>` widget
   names, rendered by KWin's built-in "Configure..." dialog for scripts
@@ -55,70 +55,61 @@ loaded and driven entirely by `kwin_wayland`.
 
 ## Deploy / reload
 
-Symlink the package directory in (one-time):
+Two scripts in the repo root do the work; the manual procedures below are
+kept here only as reference for how they behave:
 
-```
-ln -s /home/ivan/dev/divvygrid/kwinscript ~/.local/share/kwin/scripts/divvygrid13
-kwriteconfig6 --file kwinrc --group Plugins --key divvygrid13Enabled true
-qdbus-qt6 org.kde.KWin /KWin reconfigure
-```
+- **`./install.sh`** — first-time setup. Reads the current plugin ID from
+  `metadata.json`, symlinks `kwinscript/` into
+  `~/.local/share/kwin/scripts/<id>`, enables it, and reconfigures KWin.
+  Idempotent.
+- **`./bump.sh`** — every edit to `kwinscript/contents/ui/main.qml` (or
+  anything `main.qml` imports) requires this, because KWin caches compiled
+  QML per plugin ID. The script rewrites `metadata.json` to the next free
+  `divvygrid<N>` name, creates a fresh symlink, migrates every key under
+  the old `[Script-<oldId>]` kwinrc section forward, disables + unloads
+  the old ID, and verifies the new one loads.
 
-- **`config.ui` / `main.xml` changes**: take effect immediately — just reopen
-  System Settings' "Configure..." dialog for the script, no reload needed.
-- **`main.qml` changes**: KWin's declarative scripting engine caches compiled
-  QML per plugin ID for the life of the `kwin_wayland` process, so editing
-  `main.qml` in place and reconfiguring is **not** enough — see "Plugin ID
-  cache-busting" below.
+- **`config.ui` / `main.xml` changes**: take effect immediately — just
+  reopen System Settings' "Configure..." dialog for the script, no reload
+  needed.
+- **`main.qml` changes**: KWin caches compiled QML per plugin ID for the
+  life of `kwin_wayland`, so editing `main.qml` in place and reconfiguring
+  is **not** enough — run `./bump.sh`.
 - Binary for D-Bus CLI calls is `qdbus-qt6` (also available as `qdbus`) —
   `qdbus6` does not exist on this system.
 
-### Plugin ID cache-busting
+### Why `bump.sh` exists: plugin-ID cache-busting
 
-To force a fresh QML recompile after editing `main.qml`, bump the plugin ID
-(`Id` and `X-KDE-PluginKeyword` in `metadata.json`, e.g. `divvygrid6` →
-`divvygrid7`), symlink a fresh `~/.local/share/kwin/scripts/<newId>` pointing
-at the same `kwinscript/` directory, enable the new ID, **fully disable and
-remove the old one**, then `unloadScript` (old id) + `reconfigure` via D-Bus.
+To force a fresh QML recompile after editing `main.qml`, the script package
+itself has to look like a new plugin to KWin — `KPlugin.Id` /
+`X-KDE-PluginKeyword` are both the `[Script-<id>]` group name in kwinrc
+*and* the cache key for KWin's compiled-QML cache. `bump.sh` handles all
+of the following, which is what the old manual procedure was doing:
 
-This has two real costs, not just cosmetic ones — learned the hard way:
-
-- kcfg config is stored per-plugin-ID section in kwinrc
-  (`[Script-divvygrid7]`), so every bump loses previously-set values under
-  the old section name. Re-apply anything that mattered (or copy the keys
-  across with `kwriteconfig6` before disabling the old ID).
-- If the old ID isn't fully disabled/removed, it stays enabled alongside the
-  new one and both register a `ShortcutHandler` under the identical name
-  ("DivvyGrid: Show overlay") in the same `kglobalaccel` "kwin" component —
-  a genuine shortcut-ownership race, not just a duplicate System Settings
-  row. Whichever script currently holds the grab responds to Meta+Alt+D,
+- bumping the ID in `metadata.json` and creating a fresh symlink under
+  the new ID,
+- copying every per-script config key forward to `[Script-<newId>]`
+  (otherwise every previously-set value is silently lost under the old
+  section name — `bump.sh` parses kwinrc directly to find them, rather
+  than relying on memory of which keys were set; that's caused lost
+  values in past bumps),
+- flipping the enabled flag (new on, old off),
+- `unloadScript(oldId)` + `reconfigure` over D-Bus. Leaving the old ID
+  enabled lets both scripts register a `ShortcutHandler` under the
+  identical name in the same `kglobalaccel` "kwin" component, which is
+  a real shortcut-ownership race (not just a duplicate System Settings
+  row). Whichever script holds the grab responds to Meta+Alt+D,
   nondeterministically.
 
-Current plugin ID is `divvygrid13` (bumped many times during development —
-every `main.qml` edit costs another bump; check `KPlugin.Id` in
-`metadata.json` for the current live value rather than trusting this doc,
-since it will drift again the next time `main.qml` changes). Consolidating
-back to the canonical `"divvygrid"` string is still pending — do it only
-with fresh explicit approval, since guaranteeing a clean cache reset for
-that reused ID likely needs a full `plasma-kwin_wayland.service` restart,
-which kills every running Wayland app.
-
-The bump procedure end-to-end, copying every config key forward (check
-`grep -A8 "\[Script-<oldId>\]" ~/.config/kwinrc` first — don't rely on
-memory of which keys were set, that has caused a lost value before):
-
-```
-sed -i 's/divvygridN/divvygridN+1/g' kwinscript/metadata.json
-ln -s /home/ivan/dev/divvygrid/kwinscript ~/.local/share/kwin/scripts/divvygridN+1
-kwriteconfig6 --file kwinrc --group "Script-divvygridN+1" --key <each key> <value>   # repeat per key found above
-kwriteconfig6 --file kwinrc --group Plugins --key divvygridN+1Enabled true
-kwriteconfig6 --file kwinrc --group Plugins --key divvygridNEnabled false
-qdbus-qt6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript divvygridN
-qdbus-qt6 org.kde.KWin /KWin reconfigure
-rm ~/.local/share/kwin/scripts/divvygridN
-kwriteconfig6 --file kwinrc --group "Script-divvygridN" --key <each key> --delete   # repeat per key
-qdbus-qt6 org.kde.KWin /Scripting org.kde.kwin.Scripting.isScriptLoaded divvygridN+1   # must print true
-journalctl --user -b --no-pager | grep -i divvygridN+1   # must be empty
-```
+Current plugin ID is `divvygrid14` (the integer suffix has bumped many
+times during development — every `main.qml` edit costs one. Check
+`KPlugin.Id` in `metadata.json` for the current live value rather than
+trusting this doc, since it will drift the next time `main.qml` changes).
+Consolidating back to the canonical `"divvygrid"` string is still pending
+— do it only with fresh explicit approval, since guaranteeing a clean
+cache reset for that reused ID likely needs a full
+`plasma-kwin_wayland.service` restart, which kills every running Wayland
+app.
 
 ## Gotchas / lessons learned
 
@@ -176,7 +167,7 @@ journalctl --user -b --no-pager | grep -i divvygridN+1   # must be empty
 
 ## Config schema
 
-`~/.config/kwinrc`, section `[Script-divvygrid13]` (all entries optional,
+`~/.config/kwinrc`, section `[Script-divvygrid14]` (all entries optional,
 missing = kcfg default). Edit via System Settings → Window Management → KWin
 Scripts → DivvyGrid → Configure..., or by hand with `kwriteconfig6`:
 
@@ -262,15 +253,9 @@ overlays, but architecturally distinct from drag-triggered activation above
 
 ## Not yet done / known gaps
 
-- No `install.sh` yet — deploy manually per "Deploy / reload" above.
-- No undo/restore for a placement once committed.
 - No theme awareness or drop shadow on the overlay (flat colors only).
 - Drag-triggered activation (shortcut mid-drag, above) doesn't re-home
   across monitors mid-drag the way the newer auto-trigger-on-drag picker
   does — it was never reported as an issue there, so it hasn't been fixed,
   but the same fix (screen re-derivation in `onNativeDragStepped`) would
   apply if it ever comes up.
-- The old daemon (`main.cpp`, root-level `main.qml`, `settings/`,
-  `CMakeLists.txt`) is still in the repo as a fallback but is unmaintained
-  going forward and should be deleted once the script has been used for real
-  for a while.

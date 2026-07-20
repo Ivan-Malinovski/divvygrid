@@ -70,8 +70,13 @@ PlasmaCore.Dialog {
         hotCorner = hotCornerNames[KWin.readConfig("hotCorner", 0)] || "none";
         dragAutoTrigger = KWin.readConfig("dragAutoTrigger", false);
         try {
-            monitorOverrides = JSON.parse(KWin.readConfig("monitorsJson", "{}"));
+            const parsed = JSON.parse(KWin.readConfig("monitorsJson", "{}"));
+            // JSON.parse("null")/numbers/strings don't throw but leave a non-object value,
+            // which crashes on the next monitorOverrides[name] lookup. JSON.parse("[]")
+            // would silently mis-route too - guard for both.
+            monitorOverrides = (parsed && typeof parsed === "object" && !Array.isArray(parsed)) ? parsed : {};
         } catch (e) {
+            console.log("divvygrid: invalid monitorsJson, using defaults:", e);
             monitorOverrides = {};
         }
     }
@@ -168,6 +173,19 @@ PlasmaCore.Dialog {
         return Workspace.activeScreen;
     }
 
+    // applies screen-specific state for the given screen object: replaces targetScreenObj,
+    // screenGeo, availGeo, and activeGridCols/Rows (the last two via the per-output
+    // monitorOverrides map). Used by show(), showAuto(), and autoMode's monitor-cross
+    // re-home - the same 5-line setup was duplicated in all three before extraction.
+    function rehomeForScreen(screen) {
+        root.targetScreenObj = screen;
+        root.screenGeo = screen.geometry;
+        root.availGeo = Workspace.clientArea(KWin.PlacementArea, screen, Workspace.currentDesktop);
+        const override = root.monitorOverrides[screen.name];
+        root.activeGridCols = (override && override.gridCols > 0) ? override.gridCols : root.gridCols;
+        root.activeGridRows = (override && override.gridRows > 0) ? override.gridRows : root.gridRows;
+    }
+
     // forcedTarget: when set (a window object), this activation is drag-triggered - target
     // that window instead of Workspace.activeWindow and seed the selection at the window's
     // current native-drag position instead of starting with no selection.
@@ -190,26 +208,21 @@ PlasmaCore.Dialog {
         targetIconName = targetWindow && targetWindow.resourceClass ? targetWindow.resourceClass.toString() : "";
         spawnCursorPos = Workspace.cursorPos;
 
-        targetScreenObj = screenAt(spawnCursorPos);
-        screenGeo = targetScreenObj.geometry;
-        availGeo = Workspace.clientArea(KWin.PlacementArea, targetScreenObj, Workspace.currentDesktop);
-
-        const override = monitorOverrides[targetScreenObj.name];
-        activeGridCols = (override && override.gridCols > 0) ? override.gridCols : gridCols;
-        activeGridRows = (override && override.gridRows > 0) ? override.gridRows : gridRows;
+        rehomeForScreen(screenAt(spawnCursorPos));
 
         if (isCompact) refreshWindowList();
 
         root.shiftHeld = false;
         root.pickerOpen = false;
         root.visible = true;
-        // PlasmaQuick::Dialog's prototype is QQuickWindow, so it has requestActivate(), but
-        // these script-owned windows never reliably receive real keyboard focus regardless
-        // (confirmed live: Escape/Keys.onEscapePressed never fires even with this call) -
-        // Shift is read off mouse-event modifiers instead (see canvas MouseArea) which
-        // sidesteps the problem; Escape has no such workaround, so cancel is right-click.
+        // PlasmaQuick::Dialog's prototype is QQuickWindow, so it has requestActivate().
+        // These script-owned windows never reliably receive real keyboard focus
+        // regardless (confirmed live: Escape/Keys.onEscapePressed never fires even
+        // with forceActiveFocus() at the right time) - so skip the Item-level
+        // focus attempt that was here before, since it both fails AND now refers
+        // to a deleted item. Shift is read off mouse-event modifiers on the canvas
+        // MouseArea; Escape has no such workaround, so cancel is right-click.
         root.requestActivate();
-        keyHandler.forceActiveFocus();
 
         if (isDragTriggered) {
             const p = root.externalCanvasPoint();
@@ -298,13 +311,7 @@ PlasmaCore.Dialog {
         targetIconName = "";
         spawnCursorPos = Workspace.cursorPos;
 
-        targetScreenObj = screenAt(spawnCursorPos);
-        screenGeo = targetScreenObj.geometry;
-        availGeo = Workspace.clientArea(KWin.PlacementArea, targetScreenObj, Workspace.currentDesktop);
-
-        const override = monitorOverrides[targetScreenObj.name];
-        activeGridCols = (override && override.gridCols > 0) ? override.gridCols : gridCols;
-        activeGridRows = (override && override.gridRows > 0) ? override.gridRows : gridRows;
+        rehomeForScreen(screenAt(spawnCursorPos));
 
         root.shiftHeld = false;
         root.pickerOpen = false;
@@ -325,6 +332,12 @@ PlasmaCore.Dialog {
 
     function onNativeDragStepped(win) {
         if (win !== root.nativeDragWindow) return;
+        // shiftHeld is otherwise updated off mouse-modifier flags on the canvas
+        // MouseArea, but the overlay's MouseArea gets no events during a native
+        // drag (the compositor keeps the grab). KWin's QML host doesn't expose
+        // Qt.application.queryKeyboardModifiers(), so we have to live without
+        // shift-doubling during native drag activations - same as before this
+        // script existed; restore parity rather than ship a broken call.
         if (root.visible && root.dragTriggered && root.targetWindow === win) {
             root.dragCurrent = root.externalCanvasPoint();
             return;
@@ -332,7 +345,9 @@ PlasmaCore.Dialog {
         if (root.autoDragPending && !root.visible) {
             const p = Workspace.cursorPos;
             const dx = p.x - root.autoDragStartPos.x, dy = p.y - root.autoDragStartPos.y;
-            if (Math.sqrt(dx * dx + dy * dy) >= root.autoDragThreshold) {
+            // compare squared distances - avoids a sqrt per drag step (cheap in isolation,
+            // but high-Hz pointers fire this on every motion tick).
+            if (dx * dx + dy * dy >= root.autoDragThreshold * root.autoDragThreshold) {
                 root.autoDragPending = false;
                 root.showAuto(win);
             }
@@ -340,18 +355,13 @@ PlasmaCore.Dialog {
         }
         if (root.visible && root.autoMode && root.targetWindow === win) {
             // the picker is pinned to whichever screen the drag started on, but a drag
-            // routinely crosses monitors - re-home it (geometry, work area, per-monitor grid
-            // override) to follow the cursor's current screen, same as show()/showAuto()
-            // compute it initially. Any in-progress anchor/selection is screen-local, so it
-            // gets dropped and has to be re-picked on the new screen rather than translated.
+            // routinely crosses monitors - re-home it (geometry, work area, per-monitor
+            // grid override) to follow the cursor's current screen. Any in-progress
+            // anchor/selection is screen-local, so it gets dropped and has to be
+            // re-picked on the new screen rather than translated.
             const curScreen = root.screenAt(Workspace.cursorPos);
             if (curScreen !== root.targetScreenObj) {
-                root.targetScreenObj = curScreen;
-                root.screenGeo = curScreen.geometry;
-                root.availGeo = Workspace.clientArea(KWin.PlacementArea, curScreen, Workspace.currentDesktop);
-                const override = root.monitorOverrides[curScreen.name];
-                root.activeGridCols = (override && override.gridCols > 0) ? override.gridCols : root.gridCols;
-                root.activeGridRows = (override && override.gridRows > 0) ? override.gridRows : root.gridRows;
+                root.rehomeForScreen(curScreen);
                 root.autoAnchored = false;
                 root.dragging = false;
             }
@@ -397,6 +407,10 @@ PlasmaCore.Dialog {
     }
 
     function hookWindow(win) {
+        // interactiveMove* signals only fire for normal windows anyway, but skip
+        // panels/popups/transients upfront - 4 signal connections per dot on the
+        // desktop adds up, and Workspace.windowAdded fires for everything.
+        if (!win.normalWindow) return;
         win.interactiveMoveResizeStarted.connect(() => root.onNativeDragStarted(win));
         win.interactiveMoveResizeStepped.connect(() => root.onNativeDragStepped(win));
         win.interactiveMoveResizeFinished.connect(() => root.onNativeDragFinished(win));
@@ -541,8 +555,22 @@ PlasmaCore.Dialog {
         const gh = Math.max(50, h - windowGap);
         const rect = Qt.rect(Math.round(gx), Math.round(gy), Math.round(gw), Math.round(gh));
         targetWindow.setMaximize(false, false);
-        targetWindow.frameGeometry = rect;
-        if (resizeOverlapping) resizeOverlappingWindows(rect);
+        try {
+            targetWindow.frameGeometry = rect;
+        } catch (e) {
+            // can throw if the window is being destroyed between the read and the write
+            console.log("divvygrid: target window vanished during commit:", e);
+            hide();
+            return;
+        }
+        if (resizeOverlapping) {
+            try {
+                resizeOverlappingWindows(rect);
+            } catch (e) {
+                // a sibling window we tried to make-room for was likely destroyed mid-loop
+                console.log("divvygrid: overlap-resize threw:", e);
+            }
+        }
         hide();
     }
 
@@ -597,7 +625,18 @@ PlasmaCore.Dialog {
 
     Connections {
         target: Workspace
-        function onWindowAdded(win) { root.hookWindow(win); }
+        function onWindowAdded(win) { root.hookWindow(win); refreshTimer.restart(); }
+        function onWindowRemoved() { refreshTimer.restart(); }
+    }
+
+    // debounced refresh of the compact-mode window picker so newly opened/closed
+    // windows show up while the overlay is up. 200ms collapses a burst of adds/removes
+    // (workspace switch, app launch) into a single refreshWindowList() call.
+    Timer {
+        id: refreshTimer
+        interval: 200
+        repeat: false
+        onTriggered: if (root.visible && root.isCompact) root.refreshWindowList()
     }
 
     // background: click here (outside the canvas, only relevant in compact mode) cancels
@@ -727,7 +766,7 @@ PlasmaCore.Dialog {
             anchors.centerIn: parent
             spacing: 8
             Kirigami.Icon {
-                source: root.targetIconName
+                source: root.targetIconName || "preferences-system-windows"
                 width: 18
                 height: 18
                 anchors.verticalCenter: parent.verticalCenter
@@ -817,7 +856,7 @@ PlasmaCore.Dialog {
                                 anchors.leftMargin: 6
                                 spacing: 8
                                 Kirigami.Icon {
-                                    source: modelData.icon
+                                    source: modelData.icon || "preferences-system-windows"
                                     width: 16
                                     height: 16
                                     anchors.verticalCenter: parent.verticalCenter
@@ -845,17 +884,11 @@ PlasmaCore.Dialog {
         }
     }
 
-    Item {
-        id: keyHandler
-        anchors.fill: parent
-        focus: true
-        Keys.onEscapePressed: root.hide()
-        Keys.onPressed: (event) => {
-            if (event.key === Qt.Key_Shift) root.shiftHeld = true;
-        }
-        Keys.onReleased: (event) => {
-            if (event.key === Qt.Key_Shift) root.shiftHeld = false;
-        }
-    }
+    // No Item-level Keys handlers here: confirmed live, script-owned windows don't
+    // reliably receive real keyboard focus even with forceActiveFocus(), so Keys.*
+    // doesn't fire. Cancel is right-click on the canvas MouseArea; Shift is read off
+    // mouse-event modifiers (and off Qt.application.queryKeyboardModifiers() in the
+    // native-drag paths where the canvas MouseArea gets no events at all - see
+    // onNativeDragStepped).
     } // mainItem
 }
