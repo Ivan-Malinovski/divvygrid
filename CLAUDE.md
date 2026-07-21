@@ -289,9 +289,11 @@ Scripts → VibeTiles → Configure..., or by hand with `kwriteconfig6`:
 | `dragAutoTrigger` | Bool | false | auto-show a top-center picker on any native window drag past a distance threshold, no shortcut needed — see "Auto-trigger on drag" below |
 | `linkedResize` | Bool | false | co-resize windows sharing the dragged edge — see "Linked resize" below |
 | `autoAtCursor` | Bool | false | auto-trigger picker spawns trailing the cursor's drag motion — the cursor lands at the corner facing opposite the drag direction (so continuing to drag moves the cursor *away* from the picker rather than into it). Centering or fixed corner anchoring both force every selection to include the cursor's spawn cell, making single-cell picks at other cells impossible on a 1×1 picker. Also: leaving the picker clears the auto-mode anchor, so releasing past the edge does NOT commit a resize. Independent of `compactAtCursor` (which only affects non-autoMode compact activations) |
+| `autoExpandOnEdgeDrag` | Bool | false | opt-in Windows-Snap-style edge behaviour on two paths — see "Expand to fill" below. Off by default; the user typically also disables KWin's own ElectricBorder/Quick-Tile so the two don't both fire on the same edge |
 
-The global shortcut (default Meta+Alt+D) is owned by `ShortcutHandler` in
-`Shortcuts.qml`, rebindable from System Settings → Shortcuts — it's not a
+The two global shortcuts — Meta+Alt+D (`showOverlay`) and Meta+Alt+E
+(`expandToGap`, see "Expand to fill" below) — are owned by `ShortcutHandler`s
+in `Shortcuts.qml`, rebindable from System Settings → Shortcuts. Neither is a
 kcfg config entry.
 
 ## Drag-triggered activation (shortcut mid-drag)
@@ -475,6 +477,104 @@ is involved. `main.qml`: `linkedNeighbors`, `linkedStartGeo`,
   left/right/top/bottom order). An L-shaped adjacency where one window is both
   left-of and above the dragged window follows only the first — rare enough in
   practice that it wasn't worth the extra bookkeeping.
+
+## Expand to fill (`expandToGap`, `autoExpandOnEdgeDrag`)
+
+Grows the active window to fill the empty space *around* it, without moving it
+— the complement to a drag-to-place. Two entry points, one shared core:
+
+- **`Meta+Alt+E`** (second `ShortcutHandler` in `Shortcuts.qml`, action name
+  `VibeTiles: Expand to gap`) → `expandToGap(Workspace.activeWindow)`. No
+  overlay: `loadConfig` → `screenAt(window center)` → `rehomeForScreen` →
+  `expandRectFor` → `commit`.
+- **Native edge-drop** (`autoExpandOnEdgeDrag`, Windows-Snap style): drop a
+  window *by dragging it with the mouse* with the cursor against a screen edge
+  and it fills the reachable free space. No shortcut, no grid — a shadowed
+  preview of the outcome shows while the cursor is against the edge. **Scoped to
+  the native mouse drag only** — it deliberately does **not** fire from a
+  grid-overlay placement (`finishDrag`); see the "resize way too big" lesson
+  below for why.
+
+**`expandRectFor(win, screen)` is pixel-accurate, not grid-quantised** — this
+was the second of the two fixes below and the important one. It works in "slot
+space": each window's slot is its frame inflated by `windowGap/2`, so
+VibeTiles-placed windows tile edge-to-edge with no gap between slots. It grows
+`win`'s slot into the free slot-space between obstacle slots, then `commit()`
+re-insets `windowGap/2`, reproducing exactly one `windowGap` between neighbours
+and `windowGap/2` at the screen edge — the same spacing the grid produced.
+Returns screen coords **pre-inset** (what `commit` expects), or `null` if the
+window can't be read or is already maximal in its free region (keeps
+`Meta+Alt+E` a no-op there). The `screen` arg is now vestigial (the math is off
+`frameGeometry`/`root.availGeo`) but kept so callers didn't need touching; root
+must still be homed to it because `occupiedRects`/`availGeo` read root state.
+
+- **Growth is greedy per-edge, run in both orders.** `growV`/`growH` each
+  extend one axis to the nearest blocking obstacle slot (or work-area edge); a
+  window only limits the axis it lies on relative to the current band. Per-edge
+  greedy growth is order-dependent, so it runs vertical-then-horizontal *and*
+  horizontal-then-vertical and keeps the larger rectangle — both are valid
+  non-overlapping rects enclosing the seed. This assumes obstacles don't overlap
+  the seed (true for a tiled layout); a floater sitting *over* `win` is skipped
+  up front, since it can't be grown around and would make the per-edge limits
+  unsound.
+- **Why pixel, not grid.** The old grid search marked a cell "taken" at 35%
+  coverage (`buildCellOccupancy`), so a neighbour resized to cover 40% of a cell
+  rounded the whole cell of usable space away. Slot-space measures against the
+  real window edges instead, so the expansion stops exactly at the neighbour.
+
+**Native edge-drop state machine** (`main.qml`, in the `onNativeDrag*`
+handlers): `edgeDropWatch` is armed at drag start for a plain move of a normal,
+non-fullscreen window when `autoExpandOnEdgeDrag` is on; `edgePreview` is true
+only while the shadowed preview is shown (cursor in an edge zone);
+`edgePreviewRect` holds the target in screen coords (pre-inset). Each step calls
+`edgeDropTargetRect(win)`, which returns `null` cheaply when the cursor isn't
+within `edgeDropThreshold` (16px) of a *physical* output edge (so it's light
+mid-screen and only scans occupancy at the edge), and otherwise:
+- **other windows on the screen** → `expandRectFor` (fill the reachable gap);
+- **empty screen** → the exact pixel half toward the edge, quarter at a corner
+  (expanding would just maximise, which isn't what "drop on the edge" should
+  do). Deliberately pixel-based, not a grid split, so it's a clean 50/50
+  regardless of the configured grid.
+
+It also `rehomeForScreen`s the cursor's screen as a side effect, so the preview
+follows the drag across monitors for free. Release recomputes the target from
+the release position rather than trusting the last step, so pulling back off the
+edge before letting go commits nothing (the native move already applied itself).
+
+**Coexists with `dragAutoTrigger`**: both arm on a plain native move, but the
+edge check runs first in `onNativeDragStepped` and **wins** — reaching an edge
+tears down the auto-trigger picker and shows the edge preview; pulling back off
+the edge drops the preview and re-arms the picker trigger. So the picker owns
+mid-screen drags and the edge owns the edges.
+
+**Bugs worth not re-deriving:**
+- **Windows "resize way too big" from a grid drop.** An earlier version had
+  `finishDrag` (the grid-overlay placement path) also run `applyEdgeSnap` +
+  `expandToGap` when a selection landed against a screen edge. Once
+  `expandRectFor` became pixel-accurate that expansion got aggressive, so any
+  ordinary grid drop touching an edge ballooned to fill the whole free area
+  instead of committing the selected size. Fix: the fill is confined to the
+  **native mouse edge-drop** (`onNativeDrag*`); `finishDrag` commits exactly the
+  selected rect, and `applyEdgeSnap` was removed entirely (nothing else used it).
+  The distinction the user drew — "only when it's the mouse dropping it there" —
+  is the guiding rule: grid = literal size, native edge-drop = fill.
+- **"Only activated in the lower half of the screen."** The *grid* version of
+  `expandRectFor` returned `null` whenever grid quantization found no larger
+  all-free rectangle containing the window's cells — common when the window sat
+  high on the screen — and `null` meant no preview and no snap, so the feature
+  silently did nothing in the upper region. The pixel rewrite returns `null` far
+  less often (only genuinely-boxed-in windows), and the empty-screen path is
+  symmetric across all four edges, so it fires everywhere now.
+- **Preview animation "flew in/out from a direction."** The `ghost` `Rectangle`
+  binds x/y/width/height to a `held` rect (last valid target, never the
+  `(0,0,0,0)` dismiss-collapse) so it can't slide toward the origin; positional
+  `Behavior`s are gated on a `settled` flag so the *first* placement is instant
+  (only target-to-target moves while already shown animate); and appearance/
+  dismissal is a **pure opacity fade** — no scale, no positional slide — since
+  any scale or slide reads as directional motion, which was the whole complaint.
+  Note the placed *window's* own KWin resize animation was easy to mistake for a
+  ghost animation here; the "too big" bug above was the actual cause of the
+  worst of it.
 
 ## Theme awareness
 

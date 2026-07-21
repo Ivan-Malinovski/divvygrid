@@ -67,20 +67,18 @@ PlasmaCore.Dialog {
     // like one splitter (Windows Snap). Opt-in: it changes the feel of every manual
     // resize, and windows that merely happen to sit flush get pulled along too.
     property bool linkedResize: false
-    // when true, releasing a drag near a screen edge snaps to that edge and fills the
-    // reachable free space. Two independent paths honour it:
-    //   - overlay drag (finishDrag): a released rect with any edge within 10px of the
-    //     corresponding availGeo edge has that edge snapped to the screen edge, then
-    //     expandToGap fills any reachable free cells.
-    //   - plain native window drag, no shortcut held (Windows-Snap style): dropping a
-    //     window with the cursor against a screen edge fills the largest reachable gap
-    //     containing the window's current cells, or - on an otherwise-empty screen, where
-    //     that would just maximise - takes the half (quarter, at a corner) toward the
-    //     edge(s). A live shadowed preview of the outcome is shown while armed.
-    // Off by default: the user typically also wants to disable KWin's built-in
-    // ElectricBorder snap so the two don't both fire on the same edge. On the native
-    // path, dragAutoTrigger takes precedence (its picker owns the drag) - the two aren't
-    // armed on the same drag.
+    // when true, a plain native window drag (no shortcut held, Windows-Snap style) dropped
+    // with the cursor against a screen edge fills the largest reachable gap containing the
+    // window's current cells, or - on an otherwise-empty screen, where that would just
+    // maximise - takes the half (quarter, at a corner) toward the edge(s). A live shadowed
+    // preview of the outcome is shown while armed.
+    // Deliberately scoped to the *native mouse* drag only: it does NOT fire on a grid-overlay
+    // placement (finishDrag). A normal grid drop that happens to land against a screen edge
+    // must commit exactly the selected size, not balloon to fill the free area - that was a
+    // real "windows resize way too big" bug. Meta+Alt+E stays available for an explicit fill.
+    // Off by default: the user typically also wants to disable KWin's built-in ElectricBorder
+    // snap so the two don't both fire on the same edge. dragAutoTrigger takes precedence (its
+    // picker owns the drag) - the two aren't armed on the same drag.
     property bool autoExpandOnEdgeDrag: false
     // distance (px) from the physical screen edge within which a native drop counts as an
     // edge-drop. Larger than the overlay path's 10px snap since it gates a whole gesture
@@ -1573,34 +1571,6 @@ PlasmaCore.Dialog {
         return Qt.rect(x, y, w, h);
     }
 
-    // Snap any rect edge within `threshold` of the corresponding availGeo edge to that
-    // screen edge. Edges compose (corner drag snaps both axes). 10px matches KWin's
-    // default ElectricBorderPushBackPixels. Returns the (possibly modified) x, y, w, h
-    // and a `snapped` flag so callers can branch on whether any edge fired.
-    function applyEdgeSnap(rectX, rectY, rectW, rectH, availGeo, threshold) {
-        let x = rectX, y = rectY, w = rectW, h = rectH;
-        let snapped = false;
-        if (Math.abs(y - availGeo.y) <= threshold) {
-            h += y - availGeo.y;
-            y = availGeo.y;
-            snapped = true;
-        }
-        if (Math.abs((y + h) - (availGeo.y + availGeo.height)) <= threshold) {
-            h = (availGeo.y + availGeo.height) - y;
-            snapped = true;
-        }
-        if (Math.abs(x - availGeo.x) <= threshold) {
-            w += x - availGeo.x;
-            x = availGeo.x;
-            snapped = true;
-        }
-        if (Math.abs((x + w) - (availGeo.x + availGeo.width)) <= threshold) {
-            w = (availGeo.x + availGeo.width) - x;
-            snapped = true;
-        }
-        return { x: x, y: y, w: w, h: h, snapped: snapped };
-    }
-
     function finishDrag() {
         root.dragging = false;
         const r = root.snappedRect();
@@ -1608,30 +1578,17 @@ PlasmaCore.Dialog {
             hide();
             return;
         }
-        // Build the screen-coords rect from the canvas-local snappedRect() result.
-        let rectX = availGeo.x + r.x * root.scaleX;
-        let rectY = availGeo.y + r.y * root.scaleY;
-        let rectW = r.width * root.scaleX;
-        let rectH = r.height * root.scaleY;
-        // kcfg read fresh per drag so toggling the checkbox takes effect without a re-show
-        // of the overlay (loadConfig runs only on show/showAuto paths).
-        let snapped = false;
-        if (KWin.readConfig("autoExpandOnEdgeDrag", false)) {
-            const result = root.applyEdgeSnap(rectX, rectY, rectW, rectH, availGeo, 10);
-            rectX = result.x;
-            rectY = result.y;
-            rectW = result.w;
-            rectH = result.h;
-            snapped = result.snapped;
-        }
-        commit(rectX, rectY, rectW, rectH);
-        // When the snap fires, follow up with expandToGap on the just-placed window so
-        // the snap also fills any reachable free cells (top-edge drag -> extend down,
-        // corner drag -> fill the empty quadrant, etc.). Manual Meta+Alt+E still works
-        // independently for non-snap-driven fills.
-        if (snapped) {
-            root.expandToGap(root.targetWindow);
-        }
+        // A grid placement commits exactly the selected rect - no edge-snap, no expand.
+        // autoExpandOnEdgeDrag's fill is deliberately confined to a native mouse edge-drop
+        // (onNativeDrag*): letting a normal grid drop that happens to land against a screen
+        // edge auto-expand made windows balloon to fill the whole free area instead of the
+        // size the user actually selected. Meta+Alt+E is still available for an explicit fill.
+        commit(
+            availGeo.x + r.x * root.scaleX,
+            availGeo.y + r.y * root.scaleY,
+            r.width * root.scaleX,
+            r.height * root.scaleY
+        );
     }
 
     Components.Shortcuts {
@@ -1747,29 +1704,42 @@ PlasmaCore.Dialog {
             if (!root.dragging) return Qt.rect(0, 0, 0, 0);
             const r = root.snappedRect();
             if (r.width < 10 || r.height < 10) return Qt.rect(0, 0, 0, 0);
-            let screenX = root.availGeo.x + r.x * root.scaleX;
-            let screenY = root.availGeo.y + r.y * root.scaleY;
-            let screenW = r.width * root.scaleX;
-            let screenH = r.height * root.scaleY;
-            if (KWin.readConfig("autoExpandOnEdgeDrag", false)) {
-                const result = root.applyEdgeSnap(screenX, screenY, screenW, screenH, root.availGeo, 10);
-                screenX = result.x;
-                screenY = result.y;
-                screenW = result.w;
-                screenH = result.h;
-            }
+            const screenX = root.availGeo.x + r.x * root.scaleX;
+            const screenY = root.availGeo.y + r.y * root.scaleY;
+            const screenW = r.width * root.scaleX;
+            const screenH = r.height * root.scaleY;
             return Qt.rect(
                 screenX - root.availGeo.x + root.availLocalX + root.windowGap / 2,
                 screenY - root.availGeo.y + root.availLocalY + root.windowGap / 2,
                 Math.max(0, screenW - root.windowGap),
                 Math.max(0, screenH - root.windowGap));
         }
-        visible: root.ghostPreview && (root.dragging || root.edgePreview)
+        readonly property bool shown: root.ghostPreview && (root.dragging || root.edgePreview)
             && g.width > 0 && g.height > 0
-        x: g.x
-        y: g.y
-        width: g.width
-        height: g.height
+        // Last valid target geometry. x/y/width/height bind to this, not to g directly: when
+        // the preview is dismissed g collapses to (0,0,0,0), and binding the geometry straight
+        // to g animated the outline toward the top-left corner. Holding the last valid rect
+        // keeps it put. Only ever capture a real target (g.width/height > 10).
+        property rect held: Qt.rect(0, 0, 0, 0)
+        onGChanged: if (g.width > 10 && g.height > 10) held = g;
+        // settled gates the positional Behaviors so the FIRST placement is instant - without
+        // it the outline slid in from wherever held last sat, reading as a directional spawn.
+        // It becomes true one tick after the ghost appears, so target-to-target changes while
+        // already shown (moving between edges) still animate.
+        property bool settled: false
+        onShownChanged: {
+            if (shown) { held = g; Qt.callLater(() => ghost.settled = true); }
+            else settled = false;
+        }
+        visible: shown
+        x: held.x
+        y: held.y
+        width: held.width
+        height: held.height
+        // Purely a fade - no scale, no positional slide on appear/disappear. Any scale/slide
+        // read as the outline flying in or out from a direction, which is exactly what was
+        // unwanted; a plain opacity fade has no directional character at all.
+        opacity: shown ? 1 : 0
         color: root.themeAlpha(Kirigami.Theme.highlightColor, 0.18)
         border.color: root.themeAlpha(Kirigami.Theme.highlightColor, 0.9)
         border.width: 2
@@ -1784,13 +1754,13 @@ PlasmaCore.Dialog {
             shadowBlur: 0.6
             shadowVerticalOffset: 3
         }
-        // Quick animation when the snap fires - the rect smoothly transitions from
-        // the dragged position to the snapped position, so the snap itself is visible
-        // as motion rather than a hard jump. 100ms is small enough not to feel laggy.
-        Behavior on x { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
-        Behavior on y { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
-        Behavior on width { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
-        Behavior on height { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
+        Behavior on opacity { NumberAnimation { duration: 110; easing.type: Easing.OutCubic } }
+        // Smoothly follow the target when it moves while already shown (snap firing, moving
+        // from one edge to another) - gated on `settled` so the first placement doesn't slide.
+        Behavior on x { enabled: ghost.settled; NumberAnimation { duration: 110; easing.type: Easing.OutCubic } }
+        Behavior on y { enabled: ghost.settled; NumberAnimation { duration: 110; easing.type: Easing.OutCubic } }
+        Behavior on width { enabled: ghost.settled; NumberAnimation { duration: 110; easing.type: Easing.OutCubic } }
+        Behavior on height { enabled: ghost.settled; NumberAnimation { duration: 110; easing.type: Easing.OutCubic } }
     }
 
     Rectangle {

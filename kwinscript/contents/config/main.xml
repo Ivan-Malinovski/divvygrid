@@ -95,15 +95,14 @@
             <default>false</default>
         </entry>
 
-        <!-- opt-in, two paths (Windows-Snap style): (1) a plain native window drop with the
-             cursor against a screen edge fills the largest reachable free area containing the
+        <!-- opt-in, Windows-Snap style: a plain NATIVE mouse window drop with the cursor
+             against a screen edge fills the largest reachable free area containing the
              window's cells, or takes the half toward the edge on an empty screen - a shadowed
-             preview is shown while armed; (2) on overlay-drag mouse-up, any snapped-rect edge
-             within 10px of the corresponding availGeo edge snaps to the screen AND runs
-             expandToGap to fill reachable free cells. Off by default - the user typically also
-             disables KWin's ElectricBorder snap, since both firing on the same edge is the
-             failure mode. Thresholds are hardcoded, not kcfg-tunable. On native drags this is
-             skipped while dragAutoTrigger is on (that picker owns the drag). -->
+             preview is shown while armed. Deliberately does NOT fire on a grid-overlay drop
+             (that commits exactly the selected size; use Meta+Alt+E for an explicit fill).
+             Off by default - the user typically also disables KWin's ElectricBorder snap,
+             since both firing on the same edge is the failure mode. Threshold is hardcoded,
+             not kcfg-tunable. Skipped while dragAutoTrigger is on (that picker owns the drag). -->
         <entry name="autoExpandOnEdgeDrag" type="Bool">
             <default>false</default>
         </entry>

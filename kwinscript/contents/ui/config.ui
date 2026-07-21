@@ -262,7 +262,7 @@
          <string>Snap to screen edge and fill available space when dropping a window near one</string>
         </property>
         <property name="toolTip">
-         <string>Windows-Snap style: drop a window with the cursor against a screen edge and it fills the largest reachable free area containing the window's cells (top edge extends down, corner fills the quadrant); on an otherwise-empty screen it takes the half toward that edge. A shadowed preview shows the result while you hold near the edge. Also applies on overlay-drag release (any edge within 10px of the work area snaps, then fills). Off by default - you'll also want to disable KWin's built-in ElectricBorder snap so the two don't both fire on the same edge. (Ignored on native drags while "auto-trigger on drag" is on - that picker owns the drag instead.)</string>
+         <string>Windows-Snap style: drag a window by its titlebar and drop it with the cursor against a screen edge - it fills the largest reachable free area containing the window (top edge extends down, corner fills the quadrant); on an otherwise-empty screen it takes the half toward that edge. A shadowed preview shows the result while you hold near the edge. Applies only to native mouse drags - a normal grid-overlay placement commits exactly the size you selected (use Meta+Alt+E there for an explicit fill). Off by default - you'll also want to disable KWin's built-in ElectricBorder snap so the two don't both fire on the same edge. (Ignored while "auto-trigger on drag" is on - that picker owns the drag instead.)</string>
         </property>
        </widget>
       </item>

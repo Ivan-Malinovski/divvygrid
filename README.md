@@ -45,6 +45,14 @@ directory into `~/.local/share/kwin/scripts/` and enable it.
   tiled windows and both follow, so a shared edge behaves like a splitter. Works
   across a whole row or column of windows, not just the pair either side of the
   cursor, and respects each window's declared minimum/maximum size.
+- **Expand to fill** — `Meta+Alt+E` grows the active window to fill the empty
+  space around it (up to the real edges of its neighbours, not rounded to the
+  grid), without moving it.
+- **Edge-drop snap** (opt-in) — Windows-Snap-style: drop a window against a
+  screen edge and it fills the reachable free space next to it (or takes that
+  half of the screen when nothing else is there), with a live shadowed preview.
+  Plays alongside auto-trigger — the picker handles mid-screen drags, the edge
+  takes over at the edges.
 - **Theme-aware overlay** — colors track the active Plasma color scheme (the
   same set Plasma's own OSDs use), so it follows Breeze Dark/Light or any custom
   scheme with no configuration.
@@ -59,6 +67,8 @@ directory into `~/.local/share/kwin/scripts/` and enable it.
 | Hold `Shift` while dragging | doubles the grid resolution for a finer placement |
 | **Right-click** | cancels the overlay |
 | Hold the shortcut *during* a window drag | overlay retargets the dragged window |
+| `Meta+Alt+E` | expands the active window to fill the free space around it |
+| Drag a window onto a screen edge (with edge-drop on) | snaps + fills the reachable free space (or that half of the screen) |
 
 Cancel is right-click rather than `Escape` deliberately: script-owned overlay
 windows never reliably receive real keyboard focus under KWin, so a key handler
@@ -112,9 +122,15 @@ Configure...**.
 | `monitorsJson` | `{}` | per-output grid overrides, JSON map |
 | `dragAutoTrigger` | false | auto-show picker on any native window drag |
 | `autoAtCursor` | false | auto-trigger picker spawns trailing the cursor's drag direction |
+| `autoExpandOnEdgeDrag` | false | drag a window by the mouse onto a screen edge to snap + fill the free space (grid-overlay drops keep their selected size) |
 
-The global shortcut (default `Meta+Alt+D`) is owned by KWin and rebindable from
-**System Settings → Shortcuts**, same as any other KWin shortcut.
+Both global shortcuts (`Meta+Alt+D` and `Meta+Alt+E`) are owned by KWin and
+rebindable from **System Settings → Shortcuts**, same as any other KWin
+shortcut.
+
+> **Using edge-drop?** Turn off KWin's own screen-edge window tiling
+> (**System Settings → Window Management → Screen Edges**) so it and VibeTiles
+> don't both fire on the same edge.
 
 ## Development
 
