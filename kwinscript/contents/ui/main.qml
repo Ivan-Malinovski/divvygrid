@@ -1347,6 +1347,14 @@ PlasmaCore.Dialog {
         Kirigami.Theme.colorSet: Kirigami.Theme.Complementary
         Kirigami.Theme.inherit: false
 
+        // the grid-line and cell-highlight Repeater delegates all resolve to the same two
+        // translucent theme tints; compute each once here (in mainItem's Complementary
+        // scope) rather than reconstructing an identical Qt.rgba per delegate every time
+        // Shift-doubling or a grid-size change rebuilds the delegate set. Constant during a
+        // drag, so these don't recompute per frame - this just removes the per-delegate dup.
+        property color gridLineColor: root.themeAlpha(Kirigami.Theme.textColor, 0.2)
+        property color cellHighlightColor: root.themeAlpha(Kirigami.Theme.highlightColor, 0.27)
+
     // mouse-only activation via KWin screen edges - same "push cursor into corner"
     // mechanism as the daemon's injected registerScreenEdge() watcher script, just
     // registered directly here instead of over D-Bus. Only one of these four is ever
@@ -1448,7 +1456,7 @@ PlasmaCore.Dialog {
                 y: 0
                 width: 1
                 height: canvas.height
-                color: root.themeAlpha(Kirigami.Theme.textColor, 0.2)
+                color: mainItem.gridLineColor
             }
         }
         Repeater {
@@ -1458,7 +1466,7 @@ PlasmaCore.Dialog {
                 y: (index + 1) * (canvas.height / root.effRows)
                 width: canvas.width
                 height: 1
-                color: root.themeAlpha(Kirigami.Theme.textColor, 0.2)
+                color: mainItem.gridLineColor
             }
         }
 
@@ -1476,7 +1484,7 @@ PlasmaCore.Dialog {
                 y: row * (canvas.height / root.effRows)
                 width: canvas.width / root.effCols
                 height: canvas.height / root.effRows
-                color: root.themeAlpha(Kirigami.Theme.highlightColor, 0.27)
+                color: mainItem.cellHighlightColor
             }
         }
 
