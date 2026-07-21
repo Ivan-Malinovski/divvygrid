@@ -81,7 +81,7 @@ PlasmaCore.Dialog {
     // picker owns the drag) - the two aren't armed on the same drag.
     property bool autoExpandOnEdgeDrag: false
     // when true, a window placed via the grid/compact picker that lands close to but not
-    // flush against a neighbour has that gap closed automatically. See snapWindowGaps(),
+    // flush against a neighbour has that gap closed automatically. See computeGapClosedRect(),
     // called from finishDrag(). Deliberately scoped to VibeTiles' own placement commit only -
     // NOT to a plain native window resize (dragging a border with the mouse has nothing to do
     // with VibeTiles; a user doing that expects exactly the size they dragged to, same
@@ -1484,9 +1484,16 @@ PlasmaCore.Dialog {
     // screen edge - the same spacing the grid path produced. `screen` is unused now (the math
     // is pixel-based off frameGeometry and root.availGeo) but kept in the signature so callers
     // needn't change; root must be homed to it (occupiedRects/availGeo read root state).
-    function expandRectFor(forWin, screen) {
-        let fg;
-        try { fg = forWin.frameGeometry; } catch (e) { return null; }
+    // presetFg, when given, is reused instead of a fresh forWin.frameGeometry read - see
+    // computeGapClosedRect, whose caller (finishDrag) computes a placement's geometry itself
+    // rather than reading it back from the window, since a fresh read could return a different,
+    // mid-settle value while a placement's move/resize animation is still in flight (confirmed
+    // live on rapid back-to-back placements).
+    function expandRectFor(forWin, screen, presetFg) {
+        let fg = presetFg;
+        if (!fg) {
+            try { fg = forWin.frameGeometry; } catch (e) { return null; }
+        }
         if (!fg || fg.width <= 0 || fg.height <= 0) return null;
         const availGeo = root.availGeo;
         const half = root.windowGap / 2;
@@ -1499,8 +1506,12 @@ PlasmaCore.Dialog {
         const sB = Math.min(aB, fg.y + fg.height + half);
         if (sR - sL <= 0 || sB - sT <= 0) return null;
         // obstacle slots: other real windows, inflated and clamped the same way. A window that
-        // overlaps the seed (a floater sitting over forWin) is skipped - it can't be grown
-        // "around" and would make the greedy per-edge limits below unsound.
+        // overlaps the seed can't be grown "around" - the free-rectangle premise this function
+        // works on is already violated, so bail entirely rather than silently drop just that
+        // obstacle. Dropping it only from the per-edge growth math (the old behaviour) meant an
+        // obstacle that merely grazed the seed lost ALL its constraining power, including on
+        // edges it didn't actually overlap - confirmed live as growth reaching past a real,
+        // closer neighbour (also discarded this way) out to the next obstacle further out.
         const occ = root.occupiedRects(forWin);
         const obs = [];
         for (let i = 0; i < occ.length; i++) {
@@ -1508,7 +1519,12 @@ PlasmaCore.Dialog {
             const oL = Math.max(aL, o.x - half), oT = Math.max(aT, o.y - half);
             const oR = Math.min(aR, o.x + o.width + half), oB = Math.min(aB, o.y + o.height + half);
             if (oR - oL <= 0 || oB - oT <= 0) continue;
-            if (oR > sL && oL < sR && oB > sT && oT < sB) continue;
+            // 0.5px tolerance - a window already flush against forWin (shared edge, zero gap)
+            // can land a hair past exact contact under fractional display scaling, and without
+            // slack that reads as "overlapping" and aborts growth entirely. Confirmed live:
+            // the same already-snapped starting position non-deterministically bailed here
+            // depending on which way the rounding noise fell.
+            if (oR > sL + 0.5 && oL < sR - 0.5 && oB > sT + 0.5 && oT < sB - 0.5) return null;
             obs.push({ l: oL, t: oT, r: oR, b: oB });
         }
         // Grow one edge at a time to the nearest blocking obstacle slot (or work-area edge).
@@ -1595,18 +1611,20 @@ PlasmaCore.Dialog {
     // keeps this a gap-closer, not a second expand-to-fill path; genuinely filling free space
     // still requires Meta+Alt+E or autoExpandOnEdgeDrag, which the user opts into explicitly.
     // Any edge whose obstacle is farther than snapGapMax away is left where it landed.
-    function snapWindowGaps(win) {
-        if (!win || !root.isRealWindow(win) || win.fullScreen) return;
-        let fg;
-        try { fg = win.frameGeometry; } catch (e) { return; }
-        if (!fg || fg.width <= 0 || fg.height <= 0) return;
-
-        const fgCenter = Qt.point(fg.x + fg.width / 2, fg.y + fg.height / 2);
-        const screen = root.screenAt(fgCenter);
-        root.rehomeForScreen(screen);
-
-        const grown = root.expandRectFor(win, screen);
-        if (!grown) return;
+    // win/screen are used only to exclude win from the obstacle scan and to read root.availGeo
+    // for the right monitor - fg is the authoritative seed geometry (frame coords, already
+    // gap-inset), independent of win's own live frameGeometry. Called from finishDrag() BEFORE
+    // that placement is ever written to the window, with fg set to what the raw placement is
+    // about to become - not read back afterward - so this never touches a live win.frameGeometry
+    // read that a placement's own move/resize animation could still be settling. That used to be
+    // a second commit() after the first had already landed (two visible resizes back to back);
+    // folding the result into the caller's own single commit() removed that, and as a side
+    // effect also removed the animation-vs-read race entirely rather than just outrunning it.
+    // Returns the grown rect in slot space (matching commit()'s x/y/w/h), or null if there's no
+    // gap worth closing.
+    function computeGapClosedRect(win, screen, fg) {
+        const grown = root.expandRectFor(win, screen, fg);
+        if (!grown) return null;
 
         // expandRectFor works (and returns) in slot space - fg inflated by windowGap/2 - not
         // fg's own (already gap-inset) frame coordinates. Recover the same seed slot here so
@@ -1637,10 +1655,8 @@ PlasmaCore.Dialog {
         if (Math.abs(grown.y - aT) > 0.5 && sT - grown.y > 0 && sT - grown.y <= snapGapMax) T = grown.y;
         if (Math.abs(grownR - aR) > 0.5 && grownR - sR > 0 && grownR - sR <= snapGapMax) R = grownR;
         if (Math.abs(grownB - aB) > 0.5 && grownB - sB > 0 && grownB - sB <= snapGapMax) B = grownB;
-        if (L === sL && T === sT && R === sR && B === sB) return;
-
-        root.targetWindow = win;
-        root.commit(L, T, R - L, B - T);
+        if (L === sL && T === sT && R === sR && B === sB) return null;
+        return Qt.rect(L, T, R - L, B - T);
     }
 
     // Target rect for a native edge-drop of `win`, or null if the cursor is not against a
@@ -1697,18 +1713,31 @@ PlasmaCore.Dialog {
         // edge auto-expand made windows balloon to fill the whole free area instead of the
         // size the user actually selected. Meta+Alt+E is still available for an explicit fill.
         const placed = root.targetWindow;
-        commit(
-            availGeo.x + r.x * root.scaleX,
-            availGeo.y + r.y * root.scaleY,
-            r.width * root.scaleX,
-            r.height * root.scaleY
-        );
-        // Opt-in only, and capped (see snapWindowGaps) - this closes small leftover gaps to
-        // an off-grid neighbour, it does not reintroduce the "commits exactly the selected
-        // rect" guarantee above for the general case.
-        if (root.snapGaps) {
-            root.snapWindowGaps(placed);
+        let x = availGeo.x + r.x * root.scaleX;
+        let y = availGeo.y + r.y * root.scaleY;
+        let w = r.width * root.scaleX;
+        let h = r.height * root.scaleY;
+
+        // Opt-in only, and capped (see computeGapClosedRect) - this closes small leftover gaps
+        // to an off-grid neighbour, it does not reintroduce the "commits exactly the selected
+        // rect" guarantee above for the general case. Folded into this same commit() (rather
+        // than a separate one after) so a placement that closes a gap is one resize, not two -
+        // confirmed live the two-commit version was reliable but visibly did the resize twice.
+        if (root.snapGaps && placed) {
+            const inset = root.windowGap / 2;
+            const candidateFg = Qt.rect(
+                Math.round(x + inset), Math.round(y + inset),
+                Math.round(Math.max(50, w - root.windowGap)), Math.round(Math.max(50, h - root.windowGap))
+            );
+            const center = Qt.point(candidateFg.x + candidateFg.width / 2, candidateFg.y + candidateFg.height / 2);
+            const screen = root.screenAt(center);
+            root.rehomeForScreen(screen);
+            const grownSlot = root.computeGapClosedRect(placed, screen, candidateFg);
+            if (grownSlot) {
+                x = grownSlot.x; y = grownSlot.y; w = grownSlot.width; h = grownSlot.height;
+            }
         }
+        commit(x, y, w, h);
     }
 
     Components.Shortcuts {
