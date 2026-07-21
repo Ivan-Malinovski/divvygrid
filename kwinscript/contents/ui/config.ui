@@ -251,6 +251,25 @@
     </widget>
    </item>
    <item>
+    <widget class="QGroupBox" name="groupBox_autoexpand">
+     <property name="title">
+      <string>Auto-expand to gap</string>
+     </property>
+     <layout class="QFormLayout" name="formLayout_autoexpand">
+      <item row="0" column="0">
+       <widget class="QCheckBox" name="kcfg_autoExpandOnEdgeDrag">
+        <property name="text">
+         <string>Snap to screen edge and fill available space when dropping a window near one</string>
+        </property>
+        <property name="toolTip">
+         <string>Windows-Snap style: drop a window with the cursor against a screen edge and it fills the largest reachable free area containing the window's cells (top edge extends down, corner fills the quadrant); on an otherwise-empty screen it takes the half toward that edge. A shadowed preview shows the result while you hold near the edge. Also applies on overlay-drag release (any edge within 10px of the work area snaps, then fills). Off by default - you'll also want to disable KWin's built-in ElectricBorder snap so the two don't both fire on the same edge. (Ignored on native drags while "auto-trigger on drag" is on - that picker owns the drag instead.)</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
     <widget class="QGroupBox" name="groupBox_monitors">
      <property name="title">
       <string>Per-monitor grid overrides</string>

@@ -67,6 +67,25 @@ PlasmaCore.Dialog {
     // like one splitter (Windows Snap). Opt-in: it changes the feel of every manual
     // resize, and windows that merely happen to sit flush get pulled along too.
     property bool linkedResize: false
+    // when true, releasing a drag near a screen edge snaps to that edge and fills the
+    // reachable free space. Two independent paths honour it:
+    //   - overlay drag (finishDrag): a released rect with any edge within 10px of the
+    //     corresponding availGeo edge has that edge snapped to the screen edge, then
+    //     expandToGap fills any reachable free cells.
+    //   - plain native window drag, no shortcut held (Windows-Snap style): dropping a
+    //     window with the cursor against a screen edge fills the largest reachable gap
+    //     containing the window's current cells, or - on an otherwise-empty screen, where
+    //     that would just maximise - takes the half (quarter, at a corner) toward the
+    //     edge(s). A live shadowed preview of the outcome is shown while armed.
+    // Off by default: the user typically also wants to disable KWin's built-in
+    // ElectricBorder snap so the two don't both fire on the same edge. On the native
+    // path, dragAutoTrigger takes precedence (its picker owns the drag) - the two aren't
+    // armed on the same drag.
+    property bool autoExpandOnEdgeDrag: false
+    // distance (px) from the physical screen edge within which a native drop counts as an
+    // edge-drop. Larger than the overlay path's 10px snap since it gates a whole gesture
+    // rather than nudging an already-placed edge, and the cursor rarely lands pixel-exact.
+    property int edgeDropThreshold: 16
     // per-output {gridCols, gridRows} overrides, keyed by output name (e.g. "DP-2"),
     // parsed from the monitorsJson config entry
     property var monitorOverrides: ({})
@@ -103,6 +122,7 @@ PlasmaCore.Dialog {
         dragAutoTrigger = KWin.readConfig("dragAutoTrigger", false);
         autoAtCursor = KWin.readConfig("autoAtCursor", false);
         linkedResize = KWin.readConfig("linkedResize", false);
+        autoExpandOnEdgeDrag = KWin.readConfig("autoExpandOnEdgeDrag", false);
         // reading the config string is cheap; re-parsing it (JSON.parse or line-splitting)
         // every activation is the part worth avoiding - only re-parse when it changed.
         const rawMonitors = KWin.readConfig("monitorsJson", "");
@@ -325,6 +345,10 @@ PlasmaCore.Dialog {
         // explicitly so a stale true (from a picker that didn't route through hide())
         // can't leave isCompact/canvas positioning stuck in auto-mode behaviour.
         root.autoMode = false;
+        // a shortcut fired: drop any armed native edge-drop preview so it can't commit
+        // behind the overlay the user just brought up.
+        root.edgePreview = false;
+        root.edgeDropWatch = false;
         // compact mode's small, cursor-centered box makes the anchor-point restriction
         // (the selection always has to include wherever the cursor was when the shortcut
         // fired) much more cramped than in fullscreen, where there's enough room to reach
@@ -374,6 +398,9 @@ PlasmaCore.Dialog {
         root.autoMode = false;
         root.autoDragPending = false;
         root.autoAnchored = false;
+        root.edgePreview = false;
+        root.edgeDropWatch = false;
+        root.edgePreviewRect = Qt.rect(0, 0, 0, 0);
         root.dragDirection = Qt.point(0, 0);
         // drop the compact-picker window list so a later show() can't briefly display a
         // stale set (a window could have closed while the overlay was hidden); the next
@@ -401,6 +428,16 @@ PlasmaCore.Dialog {
     // on window objects, no D-Bus or second script needed.
     property var nativeDragWindow: null
     property bool nativeDragActive: false
+
+    // ---- native edge-drop (autoExpandOnEdgeDrag, no shortcut) ----
+    // armed at drag start for a plain native move when autoExpandOnEdgeDrag is on; while
+    // set, each step re-evaluates whether the cursor is against a screen edge. edgePreview
+    // is true only while the shadowed preview overlay is actually shown (cursor in an edge
+    // zone); edgePreviewRect holds the target rect in screen coords (pre-gap-inset, exactly
+    // what gets handed to commit()).
+    property bool edgeDropWatch: false
+    property bool edgePreview: false
+    property rect edgePreviewRect: Qt.rect(0, 0, 0, 0)
 
     // canvas-local point matching Workspace.cursorPos, the same frame dragStart/dragCurrent
     // live in - used to seed and update the selection during a drag-triggered activation,
@@ -701,6 +738,14 @@ PlasmaCore.Dialog {
             root.autoDragPending = true;
             root.autoDragStartPos = Workspace.cursorPos;
         }
+        // Native edge-drop watch (Windows-Snap style). Only a plain move of a normal,
+        // non-fullscreen window. Armed alongside the auto-trigger picker when both are on:
+        // the picker handles mid-screen drags, but the edge preview takes precedence
+        // whenever the cursor reaches a screen edge (see onNativeDragStepped).
+        if (root.autoExpandOnEdgeDrag && !root.visible
+                && win.normalWindow && win.move && !win.fullScreen) {
+            root.edgeDropWatch = true;
+        }
     }
 
     function onNativeDragStepped(win) {
@@ -731,6 +776,44 @@ PlasmaCore.Dialog {
                 root.dragCurrent = root.externalCanvasPoint();
             }
             return;
+        }
+        // Native edge-drop takes precedence over the auto-trigger picker: whenever the
+        // cursor is against a screen edge, show the shadowed edge preview and suppress the
+        // picker; away from the edge the picker (if enabled) behaves as before. This runs
+        // first so the edge always wins. edgeDropTargetRect returns null cheaply when not
+        // near an edge (no occupancy scan), so this stays light mid-screen and only does
+        // real work at the edge; it also homes root/the preview overlay to the cursor's
+        // screen, so the preview follows the drag across monitors.
+        if (root.edgeDropWatch) {
+            const target = root.edgeDropTargetRect(win);
+            if (target && target.width > 0 && target.height > 0) {
+                // the edge owns the drag now - tear down the auto-trigger picker if it was up.
+                if (root.autoMode) {
+                    root.autoMode = false;
+                    root.autoAnchored = false;
+                    root.dragging = false;
+                }
+                root.autoDragPending = false;
+                root.edgePreviewRect = target;
+                if (!root.edgePreview) {
+                    root.edgePreview = true;
+                    root.targetTitle = "";
+                    root.targetIconName = "";
+                    root.visible = true;
+                }
+                return;
+            }
+            if (root.edgePreview) {
+                // pulled back off the edge - drop the preview and fall through to the picker
+                // logic. Re-arm the picker trigger (if enabled) from here so continued inward
+                // motion can re-open it.
+                root.edgePreview = false;
+                root.visible = false;
+                if (root.dragAutoTrigger) {
+                    root.autoDragPending = true;
+                    root.autoDragStartPos = Workspace.cursorPos;
+                }
+            }
         }
         if (root.autoDragPending && !root.visible) {
             const p = Workspace.cursorPos;
@@ -775,6 +858,7 @@ PlasmaCore.Dialog {
                 root.autoAnchored = true;
                 root.dragging = true;
             }
+            return;
         }
     }
 
@@ -799,6 +883,22 @@ PlasmaCore.Dialog {
                 // the native move already applied itself, so just get out of the way
                 hide();
             }
+            return;
+        }
+        // Native edge-drop release. Recompute the target from the release position rather
+        // than trusting the last step's edgePreviewRect - if the cursor pulled back off the
+        // edge just before release, the recompute returns null and nothing snaps (the native
+        // move already applied itself), exactly like letting go in the middle of the screen.
+        if (root.edgeDropWatch) {
+            const target = root.edgeDropTargetRect(win);
+            root.edgePreview = false;
+            root.edgeDropWatch = false;
+            root.edgePreviewRect = Qt.rect(0, 0, 0, 0);
+            root.visible = false;
+            if (target && target.width > 0 && target.height > 0) {
+                root.targetWindow = win;
+                root.commit(target.x, target.y, target.width, target.height);
+            }
         }
     }
 
@@ -811,6 +911,14 @@ PlasmaCore.Dialog {
             // bystander window closing mid-drag must not clear it (that would swallow a
             // legitimate pending trigger for the window still being dragged).
             root.autoDragPending = false;
+            // likewise tear down any armed edge-drop preview for the window that just died,
+            // so its overlay can't linger and can't commit against a dead window.
+            if (root.edgeDropWatch || root.edgePreview) {
+                root.edgePreview = false;
+                root.edgeDropWatch = false;
+                root.edgePreviewRect = Qt.rect(0, 0, 0, 0);
+                root.visible = false;
+            }
         }
         // forget the window's handlers - its connections die with it, but the entry would
         // otherwise sit in hookedWindows for the rest of the session. Only the bookkeeping
@@ -1315,11 +1423,93 @@ PlasmaCore.Dialog {
         hide();
     }
 
+    // The largest free rectangle that *contains* forWin and grows into the actual empty
+    // PIXELS around it - not grid cells. The grid-quantised version rounded a whole cell of
+    // usable space away whenever a neighbour was resized off the grid (a cell counts as
+    // "taken" at 35% coverage, so a 40%-covered cell was lost entirely); this measures
+    // against the real window edges instead. Returns screen coords, pre-gap-inset (what
+    // commit() expects), or null if forWin can't be read or there's no room to grow.
+    //
+    // Works in "slot space": every window's slot is its frame inflated by windowGap/2, so
+    // VibeTiles-placed windows tile edge-to-edge with no gap between slots. forWin's slot is
+    // grown into the free slot-space between the obstacle slots; commit() then re-insets
+    // windowGap/2, restoring exactly one windowGap between neighbours and windowGap/2 at the
+    // screen edge - the same spacing the grid path produced. `screen` is unused now (the math
+    // is pixel-based off frameGeometry and root.availGeo) but kept in the signature so callers
+    // needn't change; root must be homed to it (occupiedRects/availGeo read root state).
+    function expandRectFor(forWin, screen) {
+        let fg;
+        try { fg = forWin.frameGeometry; } catch (e) { return null; }
+        if (!fg || fg.width <= 0 || fg.height <= 0) return null;
+        const availGeo = root.availGeo;
+        const half = root.windowGap / 2;
+        const aL = availGeo.x, aT = availGeo.y;
+        const aR = availGeo.x + availGeo.width, aB = availGeo.y + availGeo.height;
+        // seed slot (recover forWin's pre-inset slot), clamped to the work area
+        const sL = Math.max(aL, fg.x - half);
+        const sT = Math.max(aT, fg.y - half);
+        const sR = Math.min(aR, fg.x + fg.width + half);
+        const sB = Math.min(aB, fg.y + fg.height + half);
+        if (sR - sL <= 0 || sB - sT <= 0) return null;
+        // obstacle slots: other real windows, inflated and clamped the same way. A window that
+        // overlaps the seed (a floater sitting over forWin) is skipped - it can't be grown
+        // "around" and would make the greedy per-edge limits below unsound.
+        const occ = root.occupiedRects(forWin);
+        const obs = [];
+        for (let i = 0; i < occ.length; i++) {
+            const o = occ[i];
+            const oL = Math.max(aL, o.x - half), oT = Math.max(aT, o.y - half);
+            const oR = Math.min(aR, o.x + o.width + half), oB = Math.min(aB, o.y + o.height + half);
+            if (oR - oL <= 0 || oB - oT <= 0) continue;
+            if (oR > sL && oL < sR && oB > sT && oT < sB) continue;
+            obs.push({ l: oL, t: oT, r: oR, b: oB });
+        }
+        // Grow one edge at a time to the nearest blocking obstacle slot (or work-area edge).
+        // growV/growH each yield a valid non-overlapping band; a window only limits the axis
+        // it lies on relative to the current extent. Because per-edge greedy growth is order-
+        // dependent, run vertical-then-horizontal and horizontal-then-vertical and keep the
+        // larger result - both are valid rectangles enclosing the seed.
+        function growV(L, R) {
+            let t = aT, b = aB;
+            for (let i = 0; i < obs.length; i++) {
+                const o = obs[i];
+                if (o.r > L && o.l < R) {          // horizontally overlaps the band
+                    if (o.b <= sT) t = Math.max(t, o.b);   // sits above the seed
+                    if (o.t >= sB) b = Math.min(b, o.t);   // sits below the seed
+                }
+            }
+            return { t: t, b: b };
+        }
+        function growH(T, B) {
+            let l = aL, r = aR;
+            for (let i = 0; i < obs.length; i++) {
+                const o = obs[i];
+                if (o.b > T && o.t < B) {          // vertically overlaps the band
+                    if (o.r <= sL) l = Math.max(l, o.r);   // sits left of the seed
+                    if (o.l >= sR) r = Math.min(r, o.l);   // sits right of the seed
+                }
+            }
+            return { l: l, r: r };
+        }
+        const v1 = growV(sL, sR);        // vertical-then-horizontal
+        const h1 = growH(v1.t, v1.b);
+        const a1 = (h1.r - h1.l) * (v1.b - v1.t);
+        const h2 = growH(sT, sB);        // horizontal-then-vertical
+        const v2 = growV(h2.l, h2.r);
+        const a2 = (h2.r - h2.l) * (v2.b - v2.t);
+        let L, T, R, B;
+        if (a1 >= a2) { L = h1.l; R = h1.r; T = v1.t; B = v1.b; }
+        else { L = h2.l; R = h2.r; T = v2.t; B = v2.b; }
+        // no meaningful growth past the seed slot -> nothing to do (keeps Meta+Alt+E a no-op
+        // when a window is already maximal in its free region).
+        if (!(L < sL - 0.5 || R > sR + 0.5 || T < sT - 0.5 || B > sB + 0.5)) return null;
+        return Qt.rect(L, T, R - L, B - T);
+    }
+
     function expandToGap(forWin) {
         // No-overlay expansion: the active window grows into the largest free rectangle
         // that contains its current cells, in any of the four directions (transitively
-        // through free corridors). The new rectangle must be all-free outside the
-        // window's own cells; if no larger qualifying rectangle exists, no-op.
+        // through free corridors). If no larger qualifying rectangle exists, no-op.
         if (!forWin || !root.isRealWindow(forWin)) return;
         if (root.visible) {
             // picker is open; don't race its state setup against our own rehomeForScreen.
@@ -1331,55 +1521,84 @@ PlasmaCore.Dialog {
         // .x/.y/.width/.height), so build the point manually before passing to screenAt.
         const fgCenter = Qt.point(forWin.frameGeometry.x + forWin.frameGeometry.width / 2,
                                   forWin.frameGeometry.y + forWin.frameGeometry.height / 2);
-        root.rehomeForScreen(root.screenAt(fgCenter));
-        const cols = root.activeGridCols, rows = root.activeGridRows;
-        if (cols <= 0 || rows <= 0) return;
-        const cellW = root.availGeo.width / cols, cellH = root.availGeo.height / rows;
-        const fg = forWin.frameGeometry;
-        // floor/ceil = "covers" semantics: any pixel of overlap marks the cell occupied.
-        // Clamp to grid so a window straddling a screen edge doesn't run the loops off.
-        const c1Win = Math.max(0, Math.floor((fg.x - root.availGeo.x) / cellW));
-        const c2Win = Math.min(cols, Math.ceil((fg.x + fg.width - root.availGeo.x) / cellW));
-        const r1Win = Math.max(0, Math.floor((fg.y - root.availGeo.y) / cellH));
-        const r2Win = Math.min(rows, Math.ceil((fg.y + fg.height - root.availGeo.y) / cellH));
-        if (c2Win <= c1Win || r2Win <= r1Win) return;
-        // forWin = exceptWin, so the window's own cells read as free in `taken`.
-        const taken = root.buildCellOccupancy(forWin);
-        const winArea = (c2Win - c1Win) * (r2Win - r1Win);
-        // Constrained variant of findFreeRegion: nc1..nr2 must contain c1Win..r2Win,
-        // which shrinks the candidate count from O(cols²·rows²) to a window-sized subset
-        // (8 candidates for a 2×2 window on a 6×4 grid, ~750 worst case on 8×6).
-        let bestNc1 = c1Win, bestNr1 = r1Win, bestNc2 = c2Win, bestNr2 = r2Win;
-        let bestScore = winArea;
-        for (let nc1 = 0; nc1 <= c1Win; nc1++) {
-            for (let nc2 = Math.max(c2Win, nc1 + 1); nc2 <= cols; nc2++) {
-                for (let nr1 = 0; nr1 <= r1Win; nr1++) {
-                    for (let nr2 = Math.max(r2Win, nr1 + 1); nr2 <= rows; nr2++) {
-                        const score = (nc2 - nc1) * (nr2 - nr1);
-                        if (score <= bestScore) continue;
-                        let ok = true;
-                        for (let c = nc1; c < nc2 && ok; c++) {
-                            for (let r = nr1; r < nr2; r++) {
-                                if (c >= c1Win && c < c2Win && r >= r1Win && r < r2Win) continue;
-                                if (taken[c * rows + r]) { ok = false; break; }
-                            }
-                        }
-                        if (!ok) continue;
-                        bestNc1 = nc1; bestNr1 = nr1; bestNc2 = nc2; bestNr2 = nr2;
-                        bestScore = score;
-                    }
-                }
-            }
-        }
-        if (bestScore === winArea) return;
-        const newX = root.availGeo.x + bestNc1 * cellW;
-        const newY = root.availGeo.y + bestNr1 * cellH;
-        const newW = (bestNc2 - bestNc1) * cellW;
-        const newH = (bestNr2 - bestNr1) * cellH;
+        const screen = root.screenAt(fgCenter);
+        // rehome before expandRectFor - occupiedRects and commit() both read root state.
+        root.rehomeForScreen(screen);
+        const rect = root.expandRectFor(forWin, screen);
+        if (!rect) return;
         // commit() re-applies windowGap/2 and runs the relocate/shrink passes, so an
         // expansion that pushes into another window behaves like a drag-to-place.
         root.targetWindow = forWin;
-        root.commit(newX, newY, newW, newH);
+        root.commit(rect.x, rect.y, rect.width, rect.height);
+    }
+
+    // Target rect for a native edge-drop of `win`, or null if the cursor is not against a
+    // screen edge (so a drop in the middle of the screen leaves the window untouched). When
+    // other windows share the screen it fills the largest reachable gap containing the
+    // window's current cells (expandRectFor); on an otherwise-empty screen - where that would
+    // just maximise - it takes the half toward the edge, or the quarter at a corner. Returned
+    // rect is screen coords, pre-gap-inset (what commit() expects).
+    //
+    // Homes root state to the cursor's screen as a side effect: occupiedRects / expandRectFor
+    // read it, the preview overlay's geometry follows screenGeo, and commit() needs it. Safe
+    // because the caller acts only on the returned rect - nothing is placed unless non-null.
+    function edgeDropTargetRect(win) {
+        if (!win || !root.isRealWindow(win)) return null;
+        const p = Workspace.cursorPos;
+        const screen = root.screenAt(p);
+        if (!screen) return null;
+        const g = screen.geometry;
+        const t = root.edgeDropThreshold;
+        // measured against the physical output edge (the cursor is shoved to the real edge,
+        // which may sit past availGeo when a panel occupies that strip).
+        const nearLeft = (p.x - g.x) <= t;
+        const nearRight = (g.x + g.width - p.x) <= t;
+        const nearTop = (p.y - g.y) <= t;
+        const nearBottom = (g.y + g.height - p.y) <= t;
+        if (!nearLeft && !nearRight && !nearTop && !nearBottom) return null;
+        root.rehomeForScreen(screen);
+        const availGeo = root.availGeo;
+        // Other windows present: fill the reachable free pixels around the drop (expandRectFor
+        // grows the window's slot into real empty space). Null only if it's already boxed in
+        // on every side - then there's nothing to snap to, so no-op.
+        if (root.occupiedRects(win).length > 0) return root.expandRectFor(win, screen);
+        // Empty screen: the exact half toward the edge, quarter at a corner - pixel-based, not
+        // grid-quantised, so it's a clean 50/50 regardless of the configured grid.
+        const halfW = availGeo.width / 2, halfH = availGeo.height / 2;
+        let x = availGeo.x, y = availGeo.y, w = availGeo.width, h = availGeo.height;
+        if (nearLeft && !nearRight) { w = halfW; }
+        else if (nearRight && !nearLeft) { x = availGeo.x + halfW; w = halfW; }
+        if (nearTop && !nearBottom) { h = halfH; }
+        else if (nearBottom && !nearTop) { y = availGeo.y + halfH; h = halfH; }
+        return Qt.rect(x, y, w, h);
+    }
+
+    // Snap any rect edge within `threshold` of the corresponding availGeo edge to that
+    // screen edge. Edges compose (corner drag snaps both axes). 10px matches KWin's
+    // default ElectricBorderPushBackPixels. Returns the (possibly modified) x, y, w, h
+    // and a `snapped` flag so callers can branch on whether any edge fired.
+    function applyEdgeSnap(rectX, rectY, rectW, rectH, availGeo, threshold) {
+        let x = rectX, y = rectY, w = rectW, h = rectH;
+        let snapped = false;
+        if (Math.abs(y - availGeo.y) <= threshold) {
+            h += y - availGeo.y;
+            y = availGeo.y;
+            snapped = true;
+        }
+        if (Math.abs((y + h) - (availGeo.y + availGeo.height)) <= threshold) {
+            h = (availGeo.y + availGeo.height) - y;
+            snapped = true;
+        }
+        if (Math.abs(x - availGeo.x) <= threshold) {
+            w += x - availGeo.x;
+            x = availGeo.x;
+            snapped = true;
+        }
+        if (Math.abs((x + w) - (availGeo.x + availGeo.width)) <= threshold) {
+            w = (availGeo.x + availGeo.width) - x;
+            snapped = true;
+        }
+        return { x: x, y: y, w: w, h: h, snapped: snapped };
     }
 
     function finishDrag() {
@@ -1389,12 +1608,30 @@ PlasmaCore.Dialog {
             hide();
             return;
         }
-        commit(
-            availGeo.x + r.x * root.scaleX,
-            availGeo.y + r.y * root.scaleY,
-            r.width * root.scaleX,
-            r.height * root.scaleY
-        );
+        // Build the screen-coords rect from the canvas-local snappedRect() result.
+        let rectX = availGeo.x + r.x * root.scaleX;
+        let rectY = availGeo.y + r.y * root.scaleY;
+        let rectW = r.width * root.scaleX;
+        let rectH = r.height * root.scaleY;
+        // kcfg read fresh per drag so toggling the checkbox takes effect without a re-show
+        // of the overlay (loadConfig runs only on show/showAuto paths).
+        let snapped = false;
+        if (KWin.readConfig("autoExpandOnEdgeDrag", false)) {
+            const result = root.applyEdgeSnap(rectX, rectY, rectW, rectH, availGeo, 10);
+            rectX = result.x;
+            rectY = result.y;
+            rectW = result.w;
+            rectH = result.h;
+            snapped = result.snapped;
+        }
+        commit(rectX, rectY, rectW, rectH);
+        // When the snap fires, follow up with expandToGap on the just-placed window so
+        // the snap also fills any reachable free cells (top-edge drag -> extend down,
+        // corner drag -> fill the empty quadrant, etc.). Manual Meta+Alt+E still works
+        // independently for non-snap-driven fills.
+        if (snapped) {
+            root.expandToGap(root.targetWindow);
+        }
     }
 
     Components.Shortcuts {
@@ -1450,8 +1687,13 @@ PlasmaCore.Dialog {
 
     Connections {
         target: Workspace
-        function onWindowAdded(win) { root.hookWindow(win); refreshTimer.restart(); }
-        function onWindowRemoved() { refreshTimer.restart(); }
+        function onWindowAdded(win) {
+            root.hookWindow(win);
+            refreshTimer.restart();
+        }
+        function onWindowRemoved(window) {
+            refreshTimer.restart();
+        }
     }
 
     // debounced refresh of the compact-mode window picker so newly opened/closed
@@ -1474,29 +1716,89 @@ PlasmaCore.Dialog {
     // screen behind the little grid box. The compact grid is a miniature of the whole
     // output, so a selection there gives no sense of the actual size the window will end
     // up - this is the "you are here" for that. Deliberately drawn from snappedRect()
-    // rather than rawRect(): unlike the in-canvas preview (which tracks the raw cursor so
-    // small drags still register visually), this one's whole job is to show the committed
-    // outcome, so it must land exactly where commit() will put the window - same
-    // canvas->screen mapping as finishDrag(), same windowGap inset as commit().
-    // Fullscreen mode skips it: the canvas already covers the screen 1:1 there, so the
-    // ghost would sit exactly on top of the existing selection rectangle.
+    // 1:1 outline of the final window position. Applies the same edge-snap math
+    // finishDrag uses, so when you drag near a screen edge the outline jumps to the
+    // post-snap position before release - visual confirmation that snap is armed.
+    // Default-on in both compact and fullscreen modes.
+    //
+    // Coord-system notes: snappedRect() returns a rect in "canvas-local within work
+    // area" units (where 0 is the work area's left edge). Multiplying by scaleX and
+    // adding availGeo.x gives SCREEN coords, which is what commit() uses. The ghost
+    // Rectangle itself lives inside mainItem, whose local origin sits at the dialog's
+    // top-left (i.e., screen origin minus screenGeo.{x,y}). So we snap in screen coords
+    // and convert to mainItem-local by subtracting screenGeo.x (= availGeo.x - availLocalX).
+    // With windowGap/2 baked in so commit()'s inset geometry matches the outline exactly.
     Rectangle {
         id: ghost
-        property rect g: root.snappedRect()
-        visible: root.ghostPreview && root.isCompact && root.dragging
+        property rect g: {
+            // Native edge-drop preview: edgePreviewRect is already the final screen-coords
+            // target (post-snap/expand or the empty-screen half). Convert to mainItem-local
+            // (subtract screenGeo origin, == availGeo.x - availLocalX) and inset windowGap/2
+            // so the outline lands exactly where commit() will put the window.
+            if (root.edgePreview) {
+                const er = root.edgePreviewRect;
+                if (er.width < 10 || er.height < 10) return Qt.rect(0, 0, 0, 0);
+                return Qt.rect(
+                    er.x - root.availGeo.x + root.availLocalX + root.windowGap / 2,
+                    er.y - root.availGeo.y + root.availLocalY + root.windowGap / 2,
+                    Math.max(0, er.width - root.windowGap),
+                    Math.max(0, er.height - root.windowGap));
+            }
+            if (!root.dragging) return Qt.rect(0, 0, 0, 0);
+            const r = root.snappedRect();
+            if (r.width < 10 || r.height < 10) return Qt.rect(0, 0, 0, 0);
+            let screenX = root.availGeo.x + r.x * root.scaleX;
+            let screenY = root.availGeo.y + r.y * root.scaleY;
+            let screenW = r.width * root.scaleX;
+            let screenH = r.height * root.scaleY;
+            if (KWin.readConfig("autoExpandOnEdgeDrag", false)) {
+                const result = root.applyEdgeSnap(screenX, screenY, screenW, screenH, root.availGeo, 10);
+                screenX = result.x;
+                screenY = result.y;
+                screenW = result.w;
+                screenH = result.h;
+            }
+            return Qt.rect(
+                screenX - root.availGeo.x + root.availLocalX + root.windowGap / 2,
+                screenY - root.availGeo.y + root.availLocalY + root.windowGap / 2,
+                Math.max(0, screenW - root.windowGap),
+                Math.max(0, screenH - root.windowGap));
+        }
+        visible: root.ghostPreview && (root.dragging || root.edgePreview)
             && g.width > 0 && g.height > 0
-        x: root.availLocalX + g.x * root.scaleX + root.windowGap / 2
-        y: root.availLocalY + g.y * root.scaleY + root.windowGap / 2
-        width: Math.max(0, g.width * root.scaleX - root.windowGap)
-        height: Math.max(0, g.height * root.scaleY - root.windowGap)
+        x: g.x
+        y: g.y
+        width: g.width
+        height: g.height
         color: root.themeAlpha(Kirigami.Theme.highlightColor, 0.18)
         border.color: root.themeAlpha(Kirigami.Theme.highlightColor, 0.9)
         border.width: 2
         radius: 4
+        // Drop shadow so the preview reads as a floating pane over the desktop, same
+        // treatment the compact chrome gets. Especially wanted on the native edge-drop
+        // path, where the ghost is the only chrome on screen.
+        layer.enabled: visible
+        layer.effect: MultiEffect {
+            shadowEnabled: true
+            shadowColor: Qt.rgba(0, 0, 0, 0.6)
+            shadowBlur: 0.6
+            shadowVerticalOffset: 3
+        }
+        // Quick animation when the snap fires - the rect smoothly transitions from
+        // the dragged position to the snapped position, so the snap itself is visible
+        // as motion rather than a hard jump. 100ms is small enough not to feel laggy.
+        Behavior on x { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
+        Behavior on y { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
+        Behavior on width { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
+        Behavior on height { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
     }
 
     Rectangle {
         id: canvas
+        // hidden in native edge-drop preview: that mode shows only the ghost outline, no
+        // grid box (there's no cell selection to make - the target is derived from the
+        // cursor's edge, and the overlay never receives pointer events during a native drag).
+        visible: !root.edgePreview
         x: root.canvasX
         y: root.canvasY
         width: root.canvasWidth
