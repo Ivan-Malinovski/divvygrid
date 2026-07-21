@@ -7,6 +7,7 @@ import org.kde.kwin
 Item {
 
     signal showOverlay()
+    signal expandToGap()
 
     ShortcutHandler {
         name: "VibeTiles: Show overlay"
@@ -14,6 +15,15 @@ Item {
         sequence: "Meta+Alt+D"
         onActivated: {
             showOverlay();
+        }
+    }
+
+    ShortcutHandler {
+        name: "VibeTiles: Expand to gap"
+        text: "VibeTiles: Expand to gap"
+        sequence: "Meta+Alt+E"
+        onActivated: {
+            expandToGap();
         }
     }
 }

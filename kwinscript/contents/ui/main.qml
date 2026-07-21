@@ -1315,6 +1315,73 @@ PlasmaCore.Dialog {
         hide();
     }
 
+    function expandToGap(forWin) {
+        // No-overlay expansion: the active window grows into the largest free rectangle
+        // that contains its current cells, in any of the four directions (transitively
+        // through free corridors). The new rectangle must be all-free outside the
+        // window's own cells; if no larger qualifying rectangle exists, no-op.
+        if (!forWin || !root.isRealWindow(forWin)) return;
+        if (root.visible) {
+            // picker is open; don't race its state setup against our own rehomeForScreen.
+            hide();
+            return;
+        }
+        root.loadConfig();
+        // frameGeometry is a QML Qt.rect - it has no .center property in QML (only
+        // .x/.y/.width/.height), so build the point manually before passing to screenAt.
+        const fgCenter = Qt.point(forWin.frameGeometry.x + forWin.frameGeometry.width / 2,
+                                  forWin.frameGeometry.y + forWin.frameGeometry.height / 2);
+        root.rehomeForScreen(root.screenAt(fgCenter));
+        const cols = root.activeGridCols, rows = root.activeGridRows;
+        if (cols <= 0 || rows <= 0) return;
+        const cellW = root.availGeo.width / cols, cellH = root.availGeo.height / rows;
+        const fg = forWin.frameGeometry;
+        // floor/ceil = "covers" semantics: any pixel of overlap marks the cell occupied.
+        // Clamp to grid so a window straddling a screen edge doesn't run the loops off.
+        const c1Win = Math.max(0, Math.floor((fg.x - root.availGeo.x) / cellW));
+        const c2Win = Math.min(cols, Math.ceil((fg.x + fg.width - root.availGeo.x) / cellW));
+        const r1Win = Math.max(0, Math.floor((fg.y - root.availGeo.y) / cellH));
+        const r2Win = Math.min(rows, Math.ceil((fg.y + fg.height - root.availGeo.y) / cellH));
+        if (c2Win <= c1Win || r2Win <= r1Win) return;
+        // forWin = exceptWin, so the window's own cells read as free in `taken`.
+        const taken = root.buildCellOccupancy(forWin);
+        const winArea = (c2Win - c1Win) * (r2Win - r1Win);
+        // Constrained variant of findFreeRegion: nc1..nr2 must contain c1Win..r2Win,
+        // which shrinks the candidate count from O(cols²·rows²) to a window-sized subset
+        // (8 candidates for a 2×2 window on a 6×4 grid, ~750 worst case on 8×6).
+        let bestNc1 = c1Win, bestNr1 = r1Win, bestNc2 = c2Win, bestNr2 = r2Win;
+        let bestScore = winArea;
+        for (let nc1 = 0; nc1 <= c1Win; nc1++) {
+            for (let nc2 = Math.max(c2Win, nc1 + 1); nc2 <= cols; nc2++) {
+                for (let nr1 = 0; nr1 <= r1Win; nr1++) {
+                    for (let nr2 = Math.max(r2Win, nr1 + 1); nr2 <= rows; nr2++) {
+                        const score = (nc2 - nc1) * (nr2 - nr1);
+                        if (score <= bestScore) continue;
+                        let ok = true;
+                        for (let c = nc1; c < nc2 && ok; c++) {
+                            for (let r = nr1; r < nr2; r++) {
+                                if (c >= c1Win && c < c2Win && r >= r1Win && r < r2Win) continue;
+                                if (taken[c * rows + r]) { ok = false; break; }
+                            }
+                        }
+                        if (!ok) continue;
+                        bestNc1 = nc1; bestNr1 = nr1; bestNc2 = nc2; bestNr2 = nr2;
+                        bestScore = score;
+                    }
+                }
+            }
+        }
+        if (bestScore === winArea) return;
+        const newX = root.availGeo.x + bestNc1 * cellW;
+        const newY = root.availGeo.y + bestNr1 * cellH;
+        const newW = (bestNc2 - bestNc1) * cellW;
+        const newH = (bestNr2 - bestNr1) * cellH;
+        // commit() re-applies windowGap/2 and runs the relocate/shrink passes, so an
+        // expansion that pushes into another window behaves like a drag-to-place.
+        root.targetWindow = forWin;
+        root.commit(newX, newY, newW, newH);
+    }
+
     function finishDrag() {
         root.dragging = false;
         const r = root.snappedRect();
@@ -1332,6 +1399,7 @@ PlasmaCore.Dialog {
 
     Components.Shortcuts {
         onShowOverlay: root.toggle()
+        onExpandToGap: root.expandToGap(Workspace.activeWindow)
     }
 
     Item {
