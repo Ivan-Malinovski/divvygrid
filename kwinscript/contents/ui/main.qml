@@ -713,18 +713,26 @@ PlasmaCore.Dialog {
         return (kind === "min") ? Math.max(v, fallback) : v;
     }
 
-    function stepLinkedResize(win) {
+    // `rect`, when given, is the geometry interactiveMoveResizeStepped already delivered -
+    // reuse it instead of a redundant win.frameGeometry round trip. onNativeDragFinished has
+    // no such value (interactiveMoveResizeFinished carries no rect), so it omits the arg and
+    // this falls back to reading the property directly.
+    function stepLinkedResize(win, rect) {
         if (root.linkedNeighbors.length === 0) return;
-        // unlike the neighbour loop below (which catches per-window), this read is called
-        // straight from the interactiveMoveResize* signal handlers with no try/catch above
-        // it - if the dragged window is being destroyed mid-drag, this would throw out of
-        // the handler. Abandon the linked resize instead.
         let g;
-        try {
-            g = win.frameGeometry;
-        } catch (e) {
-            root.endLinkedResize();
-            return;
+        if (rect) {
+            g = rect;
+        } else {
+            // unlike the neighbour loop below (which catches per-window), this read is called
+            // straight from the interactiveMoveResize* signal handlers with no try/catch above
+            // it - if the dragged window is being destroyed mid-drag, this would throw out of
+            // the handler. Abandon the linked resize instead.
+            try {
+                g = win.frameGeometry;
+            } catch (e) {
+                root.endLinkedResize();
+                return;
+            }
         }
         const s = root.linkedStartGeo;
         // per-edge deltas rather than a single "which handle is the user dragging" guess -
@@ -806,9 +814,9 @@ PlasmaCore.Dialog {
         }
     }
 
-    function onNativeDragStepped(win) {
+    function onNativeDragStepped(win, rect) {
         if (win !== root.nativeDragWindow) return;
-        root.stepLinkedResize(win);
+        root.stepLinkedResize(win, rect);
         // shiftHeld is otherwise updated off mouse-modifier flags on the canvas
         // MouseArea, but the overlay's MouseArea gets no events during a native
         // drag (the compositor keeps the grab). KWin's QML host doesn't expose
@@ -1012,7 +1020,7 @@ PlasmaCore.Dialog {
         const h = {
             win: win,
             started: () => root.onNativeDragStarted(win),
-            stepped: () => root.onNativeDragStepped(win),
+            stepped: (rect) => root.onNativeDragStepped(win, rect),
             finished: () => root.onNativeDragFinished(win),
             closed: () => root.onNativeDragWindowClosed(win)
         };
