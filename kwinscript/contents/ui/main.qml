@@ -649,6 +649,28 @@ PlasmaCore.Dialog {
         // cost nothing per step beyond the no-op check.
         const sides = ["L", "R", "T", "B"];
         for (let i = 0; i < sides.length; i++) root.collectBorderChain(win, sides[i], acc);
+        // cache each neighbour's size limits once, up front - they don't change mid-drag,
+        // so re-deriving them (min/max width/height, each its own try/catch) on every step
+        // for every neighbour was pure overhead on the hot path, worse the bigger the
+        // linked chain. unmaximized tracks whether setMaximize has been called yet, so a
+        // neighbour that starts out already unmaximized isn't re-told every step either.
+        for (let i = 0; i < acc.length; i++) {
+            const n = acc[i];
+            n.minW = root.linkedLimit(n.win, "min", "width", 100);
+            n.minH = root.linkedLimit(n.win, "min", "height", 100);
+            n.maxW = root.linkedLimit(n.win, "max", "width", 0);
+            n.maxH = root.linkedLimit(n.win, "max", "height", 0);
+            n.unmaximized = false;
+            // last rect actually written to this neighbour (starts as its pre-drag geometry,
+            // since that's what's on screen before the first step) - lets stepLinkedResize
+            // skip a redundant frameGeometry write when the rounded target hasn't moved since
+            // the previous step, which happens often (interactiveMoveResizeStepped can fire
+            // more frequently than the rounded pixel target actually changes).
+            n.lastX = n.geo.x;
+            n.lastY = n.geo.y;
+            n.lastW = n.geo.width;
+            n.lastH = n.geo.height;
+        }
         root.linkedNeighbors = acc;
     }
 
@@ -695,7 +717,6 @@ PlasmaCore.Dialog {
             T: g.y - s.y,
             B: (g.y + g.height) - (s.y + s.height)
         };
-        const MIN = 100;
         for (let i = 0; i < root.linkedNeighbors.length; i++) {
             const n = root.linkedNeighbors[i], c = n.geo;
             const x1 = c.x + (n.dxStart ? d[n.dxStart] : 0);
@@ -710,17 +731,22 @@ PlasmaCore.Dialog {
             // Honouring the window's own declared limits (not just a fixed floor) is what
             // keeps it in sync with the border: an app that refuses a geometry smaller
             // than its minimum just keeps its old size, so the border would slide on
-            // without it and the layout would silently come apart mid-drag.
-            const minW = root.linkedLimit(n.win, "min", "width", MIN);
-            const minH = root.linkedLimit(n.win, "min", "height", MIN);
-            const maxW = root.linkedLimit(n.win, "max", "width", 0);
-            const maxH = root.linkedLimit(n.win, "max", "height", 0);
-            if (x2 - x1 < minW || y2 - y1 < minH) continue;
-            if ((maxW > 0 && x2 - x1 > maxW) || (maxH > 0 && y2 - y1 > maxH)) continue;
+            // without it and the layout would silently come apart mid-drag. Limits are
+            // cached on the neighbour by beginLinkedResize rather than re-derived here.
+            if (x2 - x1 < n.minW || y2 - y1 < n.minH) continue;
+            if ((n.maxW > 0 && x2 - x1 > n.maxW) || (n.maxH > 0 && y2 - y1 > n.maxH)) continue;
+            const rx = Math.round(x1), ry = Math.round(y1);
+            const rw = Math.round(x2 - x1), rh = Math.round(y2 - y1);
+            // skip the write entirely if rounding collapsed this step back to what's already
+            // on screen - avoids kicking off another client redraw/ack round-trip for nothing.
+            if (rx === n.lastX && ry === n.lastY && rw === n.lastW && rh === n.lastH) continue;
             try {
-                n.win.setMaximize(false, false);
-                n.win.frameGeometry = Qt.rect(Math.round(x1), Math.round(y1),
-                                              Math.round(x2 - x1), Math.round(y2 - y1));
+                if (!n.unmaximized) {
+                    n.win.setMaximize(false, false);
+                    n.unmaximized = true;
+                }
+                n.win.frameGeometry = Qt.rect(rx, ry, rw, rh);
+                n.lastX = rx; n.lastY = ry; n.lastW = rw; n.lastH = rh;
             } catch (e) {
                 // neighbour destroyed mid-drag - drop it rather than throwing per step
                 root.linkedNeighbors.splice(i, 1);
