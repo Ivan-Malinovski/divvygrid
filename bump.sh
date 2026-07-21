@@ -118,9 +118,16 @@ fi
 kwriteconfig6 --file kwinrc --group Plugins --key "${NEW_ID}Enabled" true
 kwriteconfig6 --file kwinrc --group Plugins --key "${CURRENT_ID}Enabled" false
 
-# 6. unload the old script (kglobalaccel entries registered by it go with it)
-#    then reconfigure - the new script is picked up on this same reconfigure
+# 6. unload the old script (kglobalaccel entries registered by it go with it),
+#    then explicitly load the new one. reconfigure() alone is NOT reliable for
+#    picking up a freshly-created plugin id - confirmed live: enabling the new
+#    id and calling reconfigure() left isScriptLoaded() false and the previous
+#    generation kept running unchanged (silently - no error, no journal entry).
+#    loadDeclarativeScript() with an explicit path loads it immediately, and is
+#    idempotent if called again on an already-loaded id (returns -1, no
+#    duplicate ShortcutHandler registration), so this is safe to run every time.
 qdbus-qt6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript "${CURRENT_ID}"
+qdbus-qt6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadDeclarativeScript "${SCRIPTS_DIR}/${NEW_ID}/contents/ui/main.qml" "${NEW_ID}"
 qdbus-qt6 org.kde.KWin /KWin reconfigure
 
 # 7. remove the old symlink + purge dead kwinrc section (so the file doesn't

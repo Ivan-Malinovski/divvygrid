@@ -80,6 +80,20 @@ PlasmaCore.Dialog {
     // snap so the two don't both fire on the same edge. dragAutoTrigger takes precedence (its
     // picker owns the drag) - the two aren't armed on the same drag.
     property bool autoExpandOnEdgeDrag: false
+    // when true, a window placed via the grid/compact picker that lands close to but not
+    // flush against a neighbour has that gap closed automatically. See snapWindowGaps(),
+    // called from finishDrag(). Deliberately scoped to VibeTiles' own placement commit only -
+    // NOT to a plain native window resize (dragging a border with the mouse has nothing to do
+    // with VibeTiles; a user doing that expects exactly the size they dragged to, same
+    // reasoning as finishDrag's own "commits exactly the selected rect" rule). Off by default
+    // since it changes the outcome of an ordinary placement the user may have wanted landed
+    // exactly where they put it.
+    property bool snapGaps: false
+    // how far (px) a snapGaps edge is allowed to grow to close a gap - keeps it a gap-closer,
+    // not a second expand-to-fill trigger. User-tunable: real off-grid gaps from a manual
+    // resize are routinely well past a small hardcoded guess (confirmed live - an earlier
+    // fixed 48-64px cap was "way too little to make any real difference" for typical gaps).
+    property int snapGapMax: 200
     // distance (px) from the physical screen edge within which a native drop counts as an
     // edge-drop. Larger than the overlay path's 10px snap since it gates a whole gesture
     // rather than nudging an already-placed edge, and the cursor rarely lands pixel-exact.
@@ -121,6 +135,8 @@ PlasmaCore.Dialog {
         autoAtCursor = KWin.readConfig("autoAtCursor", false);
         linkedResize = KWin.readConfig("linkedResize", false);
         autoExpandOnEdgeDrag = KWin.readConfig("autoExpandOnEdgeDrag", false);
+        snapGaps = KWin.readConfig("snapGaps", false);
+        snapGapMax = KWin.readConfig("snapGapMax", 200);
         // reading the config string is cheap; re-parsing it (JSON.parse or line-splitting)
         // every activation is the part worth avoiding - only re-parse when it changed.
         const rawMonitors = KWin.readConfig("monitorsJson", "");
@@ -898,6 +914,9 @@ PlasmaCore.Dialog {
                 root.commit(target.x, target.y, target.width, target.height);
             }
         }
+        // snapGaps deliberately does NOT trigger here - a plain native window resize (edge/
+        // corner drag with the mouse) has nothing to do with VibeTiles; it only follows a
+        // VibeTiles-initiated placement, from finishDrag(). See snapGaps' own comment.
     }
 
     function onNativeDragWindowClosed(win) {
@@ -1508,6 +1527,70 @@ PlasmaCore.Dialog {
         root.commit(rect.x, rect.y, rect.width, rect.height);
     }
 
+    // Opt-in (snapGaps), called from finishDrag() only: after a grid/compact-picker placement
+    // commits, close any small leftover gap to a neighbour instead of leaving it there. The
+    // scenario this targets: a neighbour was itself resized off-grid (with the mouse, outside
+    // VibeTiles), so the tiler's usual edge-to-edge spacing doesn't hold and a placement
+    // toward it lands a few pixels short of flush rather than landing exactly against it.
+    // Deliberately NOT hooked to plain native window resizes - see snapGaps' own comment.
+    //
+    // Reuses expandRectFor (same slot-space growth used by expandToGap/edge-drop) to find
+    // how far each edge could grow before hitting an obstacle, but only *applies* that growth
+    // up to snapGapMax per edge - expandRectFor's own growth is deliberately unbounded (it's
+    // meant to fill all available free space), which would make an ordinary grid placement
+    // blow up to fill the whole free region - exactly the "windows resize way too big" failure
+    // finishDrag's own comment warns about, just reached from a different trigger. Capping it
+    // keeps this a gap-closer, not a second expand-to-fill path; genuinely filling free space
+    // still requires Meta+Alt+E or autoExpandOnEdgeDrag, which the user opts into explicitly.
+    // Any edge whose obstacle is farther than snapGapMax away is left where it landed.
+    function snapWindowGaps(win) {
+        if (!win || !root.isRealWindow(win) || win.fullScreen) return;
+        let fg;
+        try { fg = win.frameGeometry; } catch (e) { return; }
+        if (!fg || fg.width <= 0 || fg.height <= 0) return;
+
+        const fgCenter = Qt.point(fg.x + fg.width / 2, fg.y + fg.height / 2);
+        const screen = root.screenAt(fgCenter);
+        root.rehomeForScreen(screen);
+
+        const grown = root.expandRectFor(win, screen);
+        if (!grown) return;
+
+        // expandRectFor works (and returns) in slot space - fg inflated by windowGap/2 - not
+        // fg's own (already gap-inset) frame coordinates. Recover the same seed slot here so
+        // the "how far did this edge grow" comparison isn't off by half a gap.
+        const half = root.windowGap / 2;
+        const sL = fg.x - half, sT = fg.y - half;
+        const sR = fg.x + fg.width + half, sB = fg.y + fg.height + half;
+        const grownR = grown.x + grown.width, grownB = grown.y + grown.height;
+
+        // grown is a valid free rectangle enclosing the seed slot with each edge moved outward
+        // (or left in place) toward the nearest obstacle/work-area edge. Clamping each edge's
+        // movement independently only ever shrinks that rectangle back toward the seed, so the
+        // clamped result stays a subset of grown - still free - without needing to re-derive it.
+        //
+        // Only close a gap toward a REAL neighbouring window - an edge whose growth reached
+        // all the way to the work-area boundary (no obstacle stopped it) is left alone, even
+        // if that boundary happens to be within snapGapMax. Screen-edge filling is
+        // autoExpandOnEdgeDrag/Meta+Alt+E's job, opted into explicitly; without this exclusion
+        // a window sitting near a screen edge with no neighbour at all crept toward that edge
+        // by up to snapGapMax on every single resize/placement, confirmed live as a
+        // creeping-left bug on repeated no-op resizes near the left edge.
+        const availGeo = root.availGeo;
+        const aL = availGeo.x, aT = availGeo.y;
+        const aR = availGeo.x + availGeo.width, aB = availGeo.y + availGeo.height;
+        const snapGapMax = root.snapGapMax;
+        let L = sL, T = sT, R = sR, B = sB;
+        if (Math.abs(grown.x - aL) > 0.5 && sL - grown.x > 0 && sL - grown.x <= snapGapMax) L = grown.x;
+        if (Math.abs(grown.y - aT) > 0.5 && sT - grown.y > 0 && sT - grown.y <= snapGapMax) T = grown.y;
+        if (Math.abs(grownR - aR) > 0.5 && grownR - sR > 0 && grownR - sR <= snapGapMax) R = grownR;
+        if (Math.abs(grownB - aB) > 0.5 && grownB - sB > 0 && grownB - sB <= snapGapMax) B = grownB;
+        if (L === sL && T === sT && R === sR && B === sB) return;
+
+        root.targetWindow = win;
+        root.commit(L, T, R - L, B - T);
+    }
+
     // Target rect for a native edge-drop of `win`, or null if the cursor is not against a
     // screen edge (so a drop in the middle of the screen leaves the window untouched). When
     // other windows share the screen it fills the largest reachable gap containing the
@@ -1561,12 +1644,19 @@ PlasmaCore.Dialog {
         // (onNativeDrag*): letting a normal grid drop that happens to land against a screen
         // edge auto-expand made windows balloon to fill the whole free area instead of the
         // size the user actually selected. Meta+Alt+E is still available for an explicit fill.
+        const placed = root.targetWindow;
         commit(
             availGeo.x + r.x * root.scaleX,
             availGeo.y + r.y * root.scaleY,
             r.width * root.scaleX,
             r.height * root.scaleY
         );
+        // Opt-in only, and capped (see snapWindowGaps) - this closes small leftover gaps to
+        // an off-grid neighbour, it does not reintroduce the "commits exactly the selected
+        // rect" guarantee above for the general case.
+        if (root.snapGaps) {
+            root.snapWindowGaps(placed);
+        }
     }
 
     Components.Shortcuts {

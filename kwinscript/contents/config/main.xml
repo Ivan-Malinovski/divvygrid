@@ -107,5 +107,21 @@
             <default>false</default>
         </entry>
 
+        <!-- opt-in: after a grid/compact-picker placement, close any small leftover gap to a
+             neighbour (e.g. a neighbour that was itself resized off-grid, so the tiler's usual
+             edge-to-edge spacing doesn't hold). Does NOT trigger on a plain native window
+             resize - that has nothing to do with VibeTiles. Only closes gaps up to a small
+             cap - genuinely filling free space still needs Meta+Alt+E or
+             autoExpandOnEdgeDrag. See main.qml's snapWindowGaps(). -->
+        <entry name="snapGaps" type="Bool">
+            <default>false</default>
+        </entry>
+
+        <!-- how far (px) a snapGaps edge is allowed to grow to close a gap. Keeps the feature
+             a gap-closer rather than a second expand-to-fill trigger - see snapWindowGaps(). -->
+        <entry name="snapGapMax" type="Int">
+            <default>200</default>
+        </entry>
+
     </group>
 </kcfg>

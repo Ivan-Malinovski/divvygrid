@@ -48,6 +48,10 @@ else
 fi
 
 kwriteconfig6 --file kwinrc --group Plugins --key "${PLUGIN_ID}Enabled" true
+# reconfigure() alone is not reliable for picking up a freshly-created plugin id
+# (see bump.sh) - load it explicitly. Idempotent: a no-op (returns -1) if
+# already loaded, so safe on repeat runs.
+qdbus-qt6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadDeclarativeScript "${DEST}/contents/ui/main.qml" "${PLUGIN_ID}"
 qdbus-qt6 org.kde.KWin /KWin reconfigure
 
 cat <<EOF

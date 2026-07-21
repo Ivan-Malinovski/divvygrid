@@ -270,6 +270,42 @@
     </widget>
    </item>
    <item>
+    <widget class="QGroupBox" name="groupBox_snapgap">
+     <property name="title">
+      <string>Snap gaps</string>
+     </property>
+     <layout class="QFormLayout" name="formLayout_snapgap">
+      <item row="0" column="0">
+       <widget class="QCheckBox" name="kcfg_snapGaps">
+        <property name="text">
+         <string>Close small gaps left after placing a window near a neighbour</string>
+        </property>
+        <property name="toolTip">
+         <string>When you place a window with the grid or compact picker and it lands close to but not flush against a neighbour - because that neighbour was itself resized off-grid - grow the window the rest of the way to close the gap. Only applies to VibeTiles' own placement, never to a plain native window resize dragged by hand. Only closes gaps up to the size set below - genuinely open free space is left alone; use Meta+Alt+E or "Auto-expand to gap" above to fill that deliberately. Off by default since it changes the outcome of an ordinary placement.</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="label_snapGapMax">
+        <property name="text">
+         <string>Maximum gap to close (px)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QSpinBox" name="kcfg_snapGapMax">
+        <property name="minimum">
+         <number>0</number>
+        </property>
+        <property name="maximum">
+         <number>2000</number>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
     <widget class="QGroupBox" name="groupBox_monitors">
      <property name="title">
       <string>Per-monitor grid overrides</string>

@@ -54,6 +54,19 @@ privileged, synchronous access to `Workspace.*`. No D-Bus, no daemon.
   race for the Meta+Alt+D grab. Disable the dev id first.
 - **`config.ui` / `main.xml` changes** take effect immediately — just
   reopen "Configure...". `main.qml` changes need `./bump.sh`.
+- **`reconfigure()` alone is not reliable for picking up a freshly-created
+  plugin id** — confirmed live: enabling a brand-new `vibetiles<N>` and
+  calling `org.kde.KWin.reconfigure` left `isScriptLoaded()` false and the
+  previous generation kept running unchanged, silently (no error, no
+  journal entry — the symptom to recognise is "edited main.qml, ran
+  bump.sh, but the behavior is unchanged"). Both scripts now call
+  `org.kde.kwin.Scripting.loadDeclarativeScript(path, pluginId)` explicitly
+  after enabling, which loads it immediately; it's idempotent (returns
+  `-1`, no duplicate `ShortcutHandler` registration) if the id is already
+  loaded, so it's safe to run on every bump/install. If `bump.sh`'s
+  own `isScriptLoaded` check ever comes back false again, load it by hand:
+  `qdbus-qt6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadDeclarativeScript
+  ~/.local/share/kwin/scripts/<id>/contents/ui/main.qml <id>`.
 - D-Bus CLI binary is `qdbus-qt6` (`qdbus6` does not exist here).
 - Consolidating the dev id to the canonical `vibetiles` string is possible
   now (that namespace has never loaded, so no restart needed) but would
@@ -132,6 +145,8 @@ Configure..., or `kwriteconfig6`:
 | `linkedResize` | Bool | false | co-resize windows sharing the dragged edge |
 | `autoAtCursor` | Bool | false | auto-trigger picker spawns trailing the cursor's drag motion instead of fixed top-center |
 | `autoExpandOnEdgeDrag` | Bool | false | Windows-Snap-style fill-on-edge-drop |
+| `snapGaps` | Bool | false | after a resize or grid/compact placement, close small leftover gaps to a neighbour |
+| `snapGapMax` | Int | 200 | px cap on how far a `snapGaps` edge is allowed to grow |
 
 Two global shortcuts, not kcfg entries: Meta+Alt+D (`showOverlay`) and
 Meta+Alt+E (`expandToGap`), both in `Shortcuts.qml`.
@@ -170,6 +185,30 @@ Meta+Alt+E (`expandToGap`), both in `Shortcuts.qml`.
   Deliberately scoped to the native mouse path only — it does not fire
   from a grid-overlay placement (`finishDrag`), which commits exactly the
   selected size.
+- **Snap gaps** (`snapGaps`) — closes a small leftover gap left when a
+  grid/compact-picker placement lands close to but not flush against a
+  neighbour (typically because the neighbour was itself resized off-grid,
+  outside VibeTiles). Triggered only from `finishDrag`, after its own
+  exact-size commit — deliberately NOT hooked to a plain native window
+  resize (confirmed live: the first version fired on *any* resize,
+  including ones with nothing to do with VibeTiles, which surprised the
+  user "it does it on ANY resize, not just when resizing through
+  VibeTiles"). Calls `snapWindowGaps()`, which reuses `expandRectFor`'s
+  slot-space growth but clamps each edge's movement to `snapGapMax`
+  (user-tunable, kcfg `Int`, default 200px — an earlier fixed
+  `max(64, windowGap*6)` guess was "way too little to make any real
+  difference" for typical off-grid gaps) so it only eats slack up to that
+  size — filling genuinely open space still requires
+  `expandToGap`/`autoExpandOnEdgeDrag`. Growth that reaches the work-area
+  boundary rather than stopping at a real obstacle window is excluded
+  entirely (checked by comparing `expandRectFor`'s returned edge against
+  `availGeo`'s), not just left uncapped — without that exclusion a window
+  sitting near a screen edge with no neighbour at all crept toward that
+  edge by up to `snapGapMax` on every trigger, confirmed live.
+  Complementary to `linkedResize`, not overlapping: that one applies to
+  any native resize and co-moves a neighbour already flush against the
+  dragged edge; this one only follows a VibeTiles placement and grows the
+  placed window itself toward a neighbour that isn't.
 
 ## Theme awareness
 
