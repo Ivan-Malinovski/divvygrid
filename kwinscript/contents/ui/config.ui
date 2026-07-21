@@ -212,87 +212,60 @@
     </widget>
    </item>
    <item>
-    <widget class="QGroupBox" name="groupBox_dragauto">
+    <widget class="QGroupBox" name="groupBox_advanced">
      <property name="title">
-      <string>Auto-trigger on drag</string>
+      <string>Advanced placement</string>
      </property>
-     <layout class="QFormLayout" name="formLayout_dragauto">
+     <layout class="QFormLayout" name="formLayout_advanced">
       <item row="0" column="0">
        <widget class="QCheckBox" name="kcfg_dragAutoTrigger">
         <property name="text">
-         <string>Show a top-center picker whenever any window is dragged</string>
+         <string>Show compact grid when dragging a window</string>
         </property>
        </widget>
       </item>
       <item row="1" column="0">
        <widget class="QCheckBox" name="kcfg_autoAtCursor">
         <property name="text">
-         <string>Spawn the auto-trigger picker at the cursor instead of top-center</string>
+         <string>Spawn that picker at the cursor instead of top-center</string>
         </property>
        </widget>
       </item>
-     </layout>
-    </widget>
-   </item>
-   <item>
-    <widget class="QGroupBox" name="groupBox_linked">
-     <property name="title">
-      <string>Linked resize</string>
-     </property>
-     <layout class="QFormLayout" name="formLayout_linked">
-      <item row="0" column="0">
+      <item row="2" column="0">
        <widget class="QCheckBox" name="kcfg_linkedResize">
         <property name="text">
          <string>Resize neighbouring windows that share the dragged edge</string>
         </property>
        </widget>
       </item>
-     </layout>
-    </widget>
-   </item>
-   <item>
-    <widget class="QGroupBox" name="groupBox_autoexpand">
-     <property name="title">
-      <string>Auto-expand to gap</string>
-     </property>
-     <layout class="QFormLayout" name="formLayout_autoexpand">
-      <item row="0" column="0">
+      <item row="3" column="0">
        <widget class="QCheckBox" name="kcfg_autoExpandOnEdgeDrag">
         <property name="text">
-         <string>Snap to screen edge and fill available space when dropping a window near one</string>
+         <string>Fill available space when dropping a window against a screen edge</string>
         </property>
         <property name="toolTip">
-         <string>Windows-Snap style: drag a window by its titlebar and drop it with the cursor against a screen edge - it fills the largest reachable free area containing the window (top edge extends down, corner fills the quadrant); on an otherwise-empty screen it takes the half toward that edge. A shadowed preview shows the result while you hold near the edge. Applies only to native mouse drags - a normal grid-overlay placement commits exactly the size you selected (use Meta+Alt+E there for an explicit fill). Off by default - you'll also want to disable KWin's built-in ElectricBorder snap so the two don't both fire on the same edge. (Ignored while "auto-trigger on drag" is on - that picker owns the drag instead.)</string>
+         <string>Windows-Snap style: drag a window by its titlebar and drop it with the cursor against a screen edge - it fills the largest reachable free area containing the window (top edge extends down, corner fills the quadrant); on an otherwise-empty screen it takes the half toward that edge. A shadowed preview shows the result while you hold near the edge. Applies only to native mouse drags - a normal grid-overlay placement commits exactly the size you selected (use Meta+Alt+E there for an explicit fill). You'll also want to disable KWin's built-in ElectricBorder snap so the two don't both fire on the same edge. Ignored while "show compact grid when dragging a window" above is on - that picker owns the drag instead.</string>
         </property>
        </widget>
       </item>
-     </layout>
-    </widget>
-   </item>
-   <item>
-    <widget class="QGroupBox" name="groupBox_snapgap">
-     <property name="title">
-      <string>Snap gaps</string>
-     </property>
-     <layout class="QFormLayout" name="formLayout_snapgap">
-      <item row="0" column="0">
+      <item row="4" column="0">
        <widget class="QCheckBox" name="kcfg_snapGaps">
         <property name="text">
          <string>Close small gaps left after placing a window near a neighbour</string>
         </property>
         <property name="toolTip">
-         <string>When you place a window with the grid or compact picker and it lands close to but not flush against a neighbour - because that neighbour was itself resized off-grid - grow the window the rest of the way to close the gap. Only applies to VibeTiles' own placement, never to a plain native window resize dragged by hand. Only closes gaps up to the size set below - genuinely open free space is left alone; use Meta+Alt+E or "Auto-expand to gap" above to fill that deliberately. Off by default since it changes the outcome of an ordinary placement.</string>
+         <string>When you place a window with the grid or compact picker and it lands close to but not flush against a neighbour - because that neighbour was itself resized off-grid - grow the window the rest of the way to close the gap. Only applies to VibeTiles' own placement, never to a plain native window resize dragged by hand. Only closes gaps up to the size set below - genuinely open free space is left alone; use the edge-fill option above for that. Off by default since it changes the outcome of an ordinary placement.</string>
         </property>
        </widget>
       </item>
-      <item row="1" column="0">
+      <item row="5" column="0">
        <widget class="QLabel" name="label_snapGapMax">
         <property name="text">
          <string>Maximum gap to close (px)</string>
         </property>
        </widget>
       </item>
-      <item row="1" column="1">
+      <item row="5" column="1">
        <widget class="QSpinBox" name="kcfg_snapGapMax">
         <property name="minimum">
          <number>0</number>
@@ -306,11 +279,30 @@
     </widget>
    </item>
    <item>
-    <widget class="QGroupBox" name="groupBox_monitors">
-     <property name="title">
-      <string>Per-monitor grid overrides</string>
+    <widget class="QPushButton" name="toggleMonitors">
+     <property name="text">
+      <string>▸ Per-monitor grid overrides</string>
+     </property>
+     <property name="checkable">
+      <bool>true</bool>
+     </property>
+     <property name="flat">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QWidget" name="monitorsContent" native="true">
+     <property name="visible">
+      <bool>false</bool>
      </property>
      <layout class="QVBoxLayout" name="verticalLayout_monitors">
+      <property name="leftMargin">
+       <number>0</number>
+      </property>
+      <property name="rightMargin">
+       <number>0</number>
+      </property>
       <item>
        <widget class="QLabel" name="label_monitorsHint">
         <property name="text">
@@ -353,5 +345,22 @@
   </layout>
  </widget>
  <resources/>
- <connections/>
+ <connections>
+  <connection>
+   <sender>toggleMonitors</sender>
+   <signal>toggled(bool)</signal>
+   <receiver>monitorsContent</receiver>
+   <slot>setVisible(bool)</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>0</x>
+     <y>0</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>0</x>
+     <y>0</y>
+    </hint>
+   </hints>
+  </connection>
+ </connections>
 </ui>
