@@ -252,9 +252,12 @@ way. Get fresh explicit approval regardless.
 - **Don't measure occupancy by summing overlap areas** — overlapping windows
   double-count the shared pixels, so a region can measure as 138% occupied
   (seen live) and any percentage threshold compared against that number is
-  meaningless. `buildCellOccupancy()` decides occupancy per grid cell instead
-  (a cell is taken when a *single* window covers ≥35% of it), which needs no
-  union-area math and matches how the rest of the tiler reasons about space.
+  meaningless. `buildCellOccupancy()` originally decided occupancy per grid
+  cell instead (a cell taken when a *single* window covered ≥35% of it),
+  needing no union-area math; `findFreeRegion()` has since moved to a
+  pixel-accurate slot-space search (see "Relocating covered windows" below)
+  that sidesteps summed-area math the same way, without the cell-quantisation
+  it traded in for.
 - **Testing drags synthetically**: `ydotool mousemove --absolute` is
   miscalibrated on this system (events cluster near origin regardless of
   target). Use relative `ydotool mousemove -x -y` instead. That said, prefer
@@ -367,22 +370,29 @@ intact but completely hidden underneath. That was an unhandled case that
 happened to no-op, not a deliberate choice.
 `relocateCoveredWindows()` / `findFreeRegion()` move it instead.
 
-- **"Free region" is defined over the grid**, not as a true maximal-empty-
-  rectangle search: candidates are all grid-aligned rectangles, the largest one
-  whose every cell is free wins. Predictable, aligned with everything else the
-  tiler does, and small enough to brute-force per commit (~210 candidates on a
-  6×4 grid, ~750 on 8×6).
-- **Occupancy is per grid cell, not per candidate rectangle**
-  (`buildCellOccupancy()`, built once per relocate and shared by every
-  candidate). Two earlier area-based versions both failed live and are worth
-  not re-deriving: testing a candidate rectangle against raw window rects and
-  requiring it to be *entirely* untouched finds nothing on a real desktop,
-  because one floating window straddling a cell boundary clips every candidate
-  near it; relaxing that to "≤15% of the candidate's area may be occupied"
-  then broke on the fact that summing per-window overlap areas double-counts
-  overlapping windows, measuring regions as up to 138% occupied. Deciding each
-  cell independently sidesteps both, and lets the qualifying rule go back to a
-  strict all-cells-free test with no tolerance constant to tune.
+- **"Free region" is pixel-accurate, not grid-quantised** — `findFreeRegion()`
+  was originally a grid search (candidates were grid-aligned rectangles, the
+  largest one whose every cell was ≥65% free won). That rounded away any free
+  space that didn't happen to fill whole cells: a neighbour manually resized
+  off-grid leaving e.g. a 2.4-cell gap only ever found 2 cells' worth of it,
+  same class of bug `expandRectFor` (see "Expand to fill" below) hit and fixed
+  first for the edge-drop path. `findFreeRegion` now uses the same
+  coordinate-compression technique: obstacles (every real window plus the
+  just-committed target rect, all inflated to slot space) contribute their
+  left/right/top/bottom edges as candidate lines — the true maximal empty
+  rectangle always has its boundary on one of those lines — and every pair of
+  x-lines × pair of y-lines is tested for freedom, keeping the largest that
+  clears the window's minimum size. Obstacle counts on a real desktop are
+  small, so the O(n²)×O(n²) sweep is cheap and only runs once per commit.
+  Two earlier grid-occupancy versions are worth not re-deriving: testing a
+  candidate rectangle against raw window rects and requiring it *entirely*
+  untouched finds nothing on a real desktop, because one floating window
+  straddling a cell boundary clips every candidate near it; relaxing that to
+  "≤15% of the candidate's area may be occupied" then broke on the fact that
+  summing per-window overlap areas double-counts overlapping windows,
+  measuring regions as up to 138% occupied. The pixel/slot-space approach
+  sidesteps both — no coverage-ratio constant to tune, an obstacle either
+  overlaps a candidate slot or it doesn't.
 - **The whole search was dead for several rounds** because the overlay counted
   itself as an occupier covering the entire screen — see the `resourceClass`
   gotcha above. Symptom to recognise: a "best occupancy ratio" that is

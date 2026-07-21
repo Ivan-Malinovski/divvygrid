@@ -1216,96 +1216,77 @@ PlasmaCore.Dialog {
         );
     }
 
-    // Which grid cells are already spoken for. Occupancy is decided per cell rather than by
-    // summing overlap areas across a candidate: summing double-counts windows that overlap
-    // each other, so a region could measure as 138% occupied (seen live) and no percentage
-    // threshold over that number means anything. A cell counts as taken when a *single*
-    // window covers at least CELL_FILL of it, which needs no union-area math and matches how
-    // the rest of the tiler reasons about space.
-    // Returns a cols*rows array of booleans, indexed c * rows + r.
-    function buildCellOccupancy(exceptWin) {
-        const cols = root.activeGridCols, rows = root.activeGridRows;
-        if (cols <= 0 || rows <= 0) return [];
-        const cellW = root.availGeo.width / cols, cellH = root.availGeo.height / rows;
-        const CELL_FILL = 0.35;
+    // Is r free of every real window (other than exceptWin)? Plain pixel overlap, no
+    // grid/threshold involved - used for final placement checks where "mostly free" isn't
+    // good enough.
+    function pixelRegionFree(r, exceptWin) {
         const occ = root.occupiedRects(exceptWin);
-        const taken = new Array(cols * rows);
-        for (let c = 0; c < cols; c++) {
-            for (let r = 0; r < rows; r++) {
-                const cell = Qt.rect(root.availGeo.x + c * cellW, root.availGeo.y + r * cellH,
-                                     cellW, cellH);
-                const limit = cellW * cellH * CELL_FILL;
-                let hit = false;
-                for (let k = 0; k < occ.length && !hit; k++) {
-                    const o = root.overlapRect(cell, occ[k]);
-                    if (o && o.width * o.height >= limit) hit = true;
-                }
-                taken[c * rows + r] = hit;
-            }
-        }
-        return taken;
-    }
-
-    // Best grid-aligned region to move a covered window into, as a final (gap-inset)
-    // geometry, or null if nothing is good enough.
-    //
-    // Are all the cells an arbitrary rectangle covers free? Membership is by cell centre, so
-    // the gap inset on an already-snapped rect doesn't matter.
-    function regionFree(r, taken) {
-        const cols = root.activeGridCols, rows = root.activeGridRows;
-        if (cols <= 0 || rows <= 0) return false;
-        const cellW = root.availGeo.width / cols, cellH = root.availGeo.height / rows;
-        for (let c = 0; c < cols; c++) {
-            for (let rr = 0; rr < rows; rr++) {
-                const cx = root.availGeo.x + (c + 0.5) * cellW;
-                const cy = root.availGeo.y + (rr + 0.5) * cellH;
-                if (cx < r.x || cx > r.x + r.width || cy < r.y || cy > r.y + r.height) continue;
-                if (taken[c * rows + rr]) return false;
-            }
+        for (let i = 0; i < occ.length; i++) {
+            if (root.overlapRect(r, occ[i])) return false;
         }
         return true;
     }
 
-    // A candidate qualifies only when every cell it spans is free. That is workable now that
-    // occupancy is per-cell: an earlier version tested the candidate rectangle against raw
-    // window rects and required it to be entirely untouched, which found nothing on a real
-    // desktop because a floating window straddling a boundary clips every candidate near it.
-    // The placement itself counts as an occupier, so the window can never be sent back
-    // underneath it - the one outcome that would defeat the point.
-    // `taken` (a buildCellOccupancy result excluding forWin) may be passed in by a caller
-    // that already has it, to avoid rebuilding the same occupancy grid twice per window.
-    function findFreeRegion(forWin, placed, taken) {
-        const cols = root.activeGridCols, rows = root.activeGridRows;
-        if (cols <= 0 || rows <= 0) return null;
-        const cellW = root.availGeo.width / cols, cellH = root.availGeo.height / rows;
-        const inset = root.windowGap / 2;
+    // Largest free rectangle anywhere on the screen that a covered window could move into, as
+    // a final (gap-inset) geometry, or null if nothing big enough is free. `placed` (the
+    // just-committed target rect) counts as an obstacle like any other window.
+    //
+    // Pixel-accurate via coordinate compression, not grid-quantised: the earlier grid version
+    // (buildCellOccupancy at 35% cell-fill) rounded away any free space that didn't happen to
+    // fill whole cells, e.g. a neighbour resized off-grid leaving a 2.4-cell gap reported as
+    // only 2 free cells. Candidate edges are every obstacle's left/right/top/bottom (inflated
+    // to slot space, same half-gap convention as expandRectFor) plus the work-area bounds -
+    // the true maximal empty rectangle always has its edges on one of those lines. Obstacle
+    // counts on a real desktop are small (a handful of windows), so the O(n^2) x O(n^2)
+    // candidate sweep is cheap; this only runs once per commit, not per frame.
+    function findFreeRegion(forWin, placed, exceptWin) {
+        const availGeo = root.availGeo;
+        const half = root.windowGap / 2;
+        const aL = availGeo.x, aT = availGeo.y;
+        const aR = availGeo.x + availGeo.width, aB = availGeo.y + availGeo.height;
 
         // a relocated window still has to be usable - don't shove it into a sliver
         const minW = Math.max(200, root.linkedLimit(forWin, "min", "width", 0));
         const minH = Math.max(150, root.linkedLimit(forWin, "min", "height", 0));
 
-        if (!taken) taken = root.buildCellOccupancy(forWin);
+        const occ = root.occupiedRects(exceptWin !== undefined ? exceptWin : forWin);
+        const obs = [];
+        function addObstacle(o) {
+            const oL = Math.max(aL, o.x - half), oT = Math.max(aT, o.y - half);
+            const oR = Math.min(aR, o.x + o.width + half), oB = Math.min(aB, o.y + o.height + half);
+            if (oR - oL > 0 && oB - oT > 0) obs.push({ l: oL, t: oT, r: oR, b: oB });
+        }
+        for (let i = 0; i < occ.length; i++) addObstacle(occ[i]);
+        if (placed) addObstacle(placed);
+
+        let xs = [aL, aR], ys = [aT, aB];
+        for (let i = 0; i < obs.length; i++) {
+            xs.push(obs[i].l, obs[i].r);
+            ys.push(obs[i].t, obs[i].b);
+        }
+        xs = Array.from(new Set(xs)).sort((a, b) => a - b);
+        ys = Array.from(new Set(ys)).sort((a, b) => a - b);
+
+        function slotFree(L, T, R, B) {
+            for (let i = 0; i < obs.length; i++) {
+                const o = obs[i];
+                if (o.r > L + 0.5 && o.l < R - 0.5 && o.b > T + 0.5 && o.t < B - 0.5) return false;
+            }
+            return true;
+        }
 
         let best = null, bestScore = 0;
-        for (let c1 = 0; c1 < cols; c1++) {
-            for (let c2 = c1 + 1; c2 <= cols; c2++) {
-                for (let r1 = 0; r1 < rows; r1++) {
-                    for (let r2 = r1 + 1; r2 <= rows; r2++) {
-                        let free = true;
-                        for (let c = c1; c < c2 && free; c++) {
-                            for (let r = r1; r < r2 && free; r++) {
-                                if (taken[c * rows + r]) free = false;
-                            }
-                        }
-                        if (!free) continue;
-                        const cand = Qt.rect(
-                            root.availGeo.x + c1 * cellW + inset,
-                            root.availGeo.y + r1 * cellH + inset,
-                            (c2 - c1) * cellW - root.windowGap,
-                            (r2 - r1) * cellH - root.windowGap
-                        );
+        for (let i = 0; i < xs.length; i++) {
+            for (let j = i + 1; j < xs.length; j++) {
+                const L = xs[i], R = xs[j];
+                if (R - L < minW) continue;
+                for (let k = 0; k < ys.length; k++) {
+                    for (let m = k + 1; m < ys.length; m++) {
+                        const T = ys[k], B = ys[m];
+                        if (B - T < minH) continue;
+                        if (!slotFree(L, T, R, B)) continue;
+                        const cand = Qt.rect(L + half, T + half, (R - L) - root.windowGap, (B - T) - root.windowGap);
                         if (cand.width < minW || cand.height < minH) continue;
-                        if (placed && root.overlapRect(cand, placed)) continue;
                         const score = cand.width * cand.height;  // biggest free region wins
                         if (score <= bestScore) continue;
                         best = cand;
@@ -1342,10 +1323,7 @@ PlasmaCore.Dialog {
         for (let j = 0; j < covered.length; j++) {
             // recomputed per window, so two windows covered by one placement can't both be
             // sent to the same spot - the first one placed counts as occupied for the next.
-            // Built once here and shared by findFreeRegion and the vacated-slot fallback,
-            // which both need the same occupancy grid (exceptWin = this covered window).
-            const taken = root.buildCellOccupancy(covered[j]);
-            let spot = root.findFreeRegion(covered[j], target, taken);
+            let spot = root.findFreeRegion(covered[j], target, covered[j]);
             if (!spot && swapAvailable) {
                 // The vacated slot is whatever geometry the placed window happened to have,
                 // which for a floating window is an arbitrary rectangle - dropping the
@@ -1355,7 +1333,7 @@ PlasmaCore.Dialog {
                 // grid region around a floating window is not necessarily free).
                 const snapped = root.snapRectToGrid(vacated);
                 const usable = !root.overlapRect(snapped, target)
-                    && root.regionFree(snapped, taken);
+                    && root.pixelRegionFree(snapped, covered[j]);
                 spot = usable ? snapped : vacated;
                 swapAvailable = false;  // one window per vacated slot
             }
