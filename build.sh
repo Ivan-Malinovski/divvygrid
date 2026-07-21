@@ -59,10 +59,14 @@ if [[ $(echo "${INTERNAL}" | wc -l) -ne 1 ]]; then
     exit 1
 fi
 
-# KPackage format: a gzipped tar whose first path component is the package
-# directory itself (containing metadata.json at the root). kpackagetool6 and
-# System Settings both unpack this directly into ~/.local/share/kwin/scripts/.
-tar -czf "${OUT}" -C . kwinscript
+# KPackage format: a zip archive with metadata.json at the archive root (no
+# wrapping directory) - confirmed live that kpackagetool6 flatly refuses
+# anything else ("unsupported archive format: ... application/gzip") even
+# though the file has a .kwinscript extension; a gzipped tar (the previous
+# approach here) was never actually installable via kpackagetool6 or System
+# Settings' "Install from File...", only via manually re-packing as zip.
+rm -f "${OUT}"
+(cd kwinscript && zip -rq "../${OUT}" .)
 SIZE=$(stat -c %s "${OUT}")
 
 restore_dev
