@@ -255,6 +255,12 @@ PlasmaCore.Dialog {
     // autoMode overrides this the other way: it always sits fixed top-center (see below),
     // never follows the cursor, so it doesn't jump around as the dragged window moves.
     property bool effectiveCompactAtCursor: (compactAtCursor || dragTriggered) && !root.autoMode
+    // cursor-following compact placements (autoAtCursor, compactAtCursor, dragTriggered)
+    // clamp to the available area's raw edge, so a cursor near the screen border spawns the
+    // picker flush against it - too close to also reach a screen-edge zone (hot corner,
+    // autoExpandOnEdgeDrag) without the two overlapping/fighting for the same drag. Keep a
+    // fixed gap off every edge instead.
+    readonly property int edgeMargin: 48
     // autoAtCursor positions the picker with the cursor at the corner facing OPPOSITE
     // the drag's motion direction (see dragDirection). If the cursor was moving +X
     // (rightward), the cursor lands at the picker's right edge - canvasX = cursorX -
@@ -267,23 +273,23 @@ PlasmaCore.Dialog {
         ? (autoAtCursor
             ? clamp(
                 spawnCursorPos.x - screenGeo.x - (root.dragDirection.x > 0 ? canvasWidth : 0),
-                availLocalX,
-                availLocalX + availGeo.width - canvasWidth
+                availLocalX + edgeMargin,
+                availLocalX + availGeo.width - canvasWidth - edgeMargin
               )
             : availLocalX + (availGeo.width - canvasWidth) / 2)
         : (isCompact && effectiveCompactAtCursor)
-            ? clamp((spawnCursorPos.x - screenGeo.x) - canvasWidth / 2, availLocalX, availLocalX + availGeo.width - canvasWidth)
+            ? clamp((spawnCursorPos.x - screenGeo.x) - canvasWidth / 2, availLocalX + edgeMargin, availLocalX + availGeo.width - canvasWidth - edgeMargin)
             : availLocalX + (availGeo.width - canvasWidth) / 2
     property real canvasY: root.autoMode
         ? (autoAtCursor
             ? clamp(
                 spawnCursorPos.y - screenGeo.y - (root.dragDirection.y > 0 ? canvasHeight : 0),
-                availLocalY,
-                availLocalY + availGeo.height - canvasHeight
+                availLocalY + edgeMargin,
+                availLocalY + availGeo.height - canvasHeight - edgeMargin
               )
-            : availLocalY + 24)
+            : availLocalY + edgeMargin)
         : (isCompact && effectiveCompactAtCursor)
-            ? clamp((spawnCursorPos.y - screenGeo.y) - canvasHeight / 2, availLocalY, availLocalY + availGeo.height - canvasHeight)
+            ? clamp((spawnCursorPos.y - screenGeo.y) - canvasHeight / 2, availLocalY + edgeMargin, availLocalY + availGeo.height - canvasHeight - edgeMargin)
             : availLocalY + (availGeo.height - canvasHeight) / 2
     // guard the divide: during a transient multi-monitor reconfigure canvasWidth can read
     // 0 for a frame, and availGeo.width/0 = Infinity propagates through finishDrag() into a
