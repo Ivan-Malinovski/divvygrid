@@ -345,6 +345,18 @@ PlasmaCore.Dialog {
         const override = root.monitorOverrides[screen.name];
         root.activeGridCols = (override && override.gridCols > 0) ? override.gridCols : root.gridCols;
         root.activeGridRows = (override && override.gridRows > 0) ? override.gridRows : root.gridRows;
+        // PlasmaCore.Dialog resizes/repositions itself internally (to track mainItem size,
+        // keep itself on-screen, etc); any such write from its C++ side permanently severs
+        // a declarative x:/y:/width:/height: binding to screenGeo (confirmed live - once
+        // that happens the window sticks to whatever geometry Plasma last set, ignoring
+        // screenGeo entirely, e.g. spawning ~400px short and offset on a portrait monitor
+        // after working fine on the very first activation). Reassert explicitly every
+        // rehome so each activation self-heals regardless of what happened to the binding
+        // in between.
+        root.x = screen.geometry.x;
+        root.y = screen.geometry.y;
+        root.width = screen.geometry.width;
+        root.height = screen.geometry.height;
     }
 
     // forcedTarget: when set (a window object), this activation is drag-triggered - target
