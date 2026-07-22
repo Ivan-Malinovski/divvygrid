@@ -10,7 +10,7 @@ Inspired by [Divvy](https://mizage.com/divvy/) and FancyZones, implemented as a
 **declarative KWin script** with no Qt/KF build dependencies: just symlink one
 directory into `~/.local/share/kwin/scripts/` and enable it.
 
-<video src="https://github.com/Ivan-Malinovski/vibetiles/releases/download/v0.3.2/vibetiles-demo.mp4" controls width="720"></video>
+![VibeTiles demo](https://github.com/Ivan-Malinovski/vibetiles/releases/download/v0.3.2/vibetiles-demo.gif)
 
 ## Features
 
