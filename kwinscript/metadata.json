@@ -5,17 +5,17 @@
         "Description": "Click-drag grid window placement",
         "EnabledByDefault": false,
         "Icon": "preferences-desktop-virtual",
-        "Id": "vibetiles61",
+        "Id": "vibetiles65",
         "License": "MIT",
         "Name": "VibeTiles",
         "ServiceTypes": ["KWin/Script"],
-        "Version": "0.3.2"
+        "Version": "0.3.3"
     },
     "X-Plasma-API": "declarativescript",
     "X-Plasma-MainScript": "ui/main.qml",
     "X-Plasma-API-Minimum-Version": "6.0",
     "KPackageStructure": "KWin/Script",
-    "X-KDE-PluginKeyword": "vibetiles61",
+    "X-KDE-PluginKeyword": "vibetiles65",
     "X-KDE-ConfigModule": "kwin/effects/configs/kcm_kwin4_genericscripted",
     "X-KDE-ParentApp": "kwin"
 }
