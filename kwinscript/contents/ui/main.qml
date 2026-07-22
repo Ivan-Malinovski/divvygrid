@@ -1966,7 +1966,7 @@ PlasmaCore.Dialog {
             Rectangle {
                 property int col: index % root.effCols
                 property int row: Math.floor(index / root.effCols)
-                visible: root.selBounds
+                property bool inSel: !!root.selBounds
                     && col >= root.selBounds.c1 && col < root.selBounds.c2
                     && row >= root.selBounds.r1 && row < root.selBounds.r2
                 x: col * (canvas.width / root.effCols)
@@ -1974,6 +1974,8 @@ PlasmaCore.Dialog {
                 width: canvas.width / root.effCols
                 height: canvas.height / root.effRows
                 color: mainItem.cellHighlightColor
+                opacity: inSel ? 1 : 0
+                Behavior on opacity { NumberAnimation { duration: 70; easing.type: Easing.OutCubic } }
             }
         }
 
@@ -2043,6 +2045,8 @@ PlasmaCore.Dialog {
         border.color: root.themeAlpha(Kirigami.Theme.textColor, 0.33)
         border.width: 1
 
+        // Same materialize-in treatment as canvas, offset slightly later so the bar reads
+        // as following the grid in rather than popping simultaneously.
         layer.enabled: visible
         layer.effect: MultiEffect {
             shadowEnabled: true
@@ -2147,6 +2151,7 @@ PlasmaCore.Dialog {
                             height: 28
                             radius: 4
                             color: entryMouse.containsMouse ? root.themeAlpha(Kirigami.Theme.highlightColor, 0.2) : "transparent"
+                            Behavior on color { ColorAnimation { duration: 90 } }
 
                             Row {
                                 anchors.verticalCenter: parent.verticalCenter
